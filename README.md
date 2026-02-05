@@ -4,15 +4,18 @@ Here is the revised `README.md`. I have adjusted the tone to be strictly technic
 
 # HashTag
 
-**HashTag** is a concurrent CLI tool for efficiently managing file hash caching on Linux systems. It recursively scans directories, computes SHA-256 hashes, and persists the results using filesystem Extended Attributes (`xattrs`).
+**HashTag** is a concurrent CLI tool for efficiently managing file hash caching on Linux systems. It recursively scans directories, computes file hashes (e.g., SHA-256, BLAKE3), and persists the results using filesystem Extended Attributes (`xattrs`).
 
 This tool is intended for workflows requiring repeated access to file integrity data without incurring the I/O cost of re-reading file contents on every execution. It is compatible with Git LFS object IDs (SHA-256).
 
 ## Features
 
 * **Concurrency:** Utilizes a worker pool to parallelize file operations, maximizing throughput on modern storage media.
+* **Multi-Algorithm:** Supports SHA-256, SHA-1, SHA-224, SHA-384, SHA-512, SHA-512/224, SHA-512/256, SHA3 (224, 256, 384, 512), BLAKE2b (256, 384, 512), BLAKE2s, BLAKE3, MD5, CRC32, CRC64, Adler32, RIPEMD-160, and xxHash.
 * **Memory Efficiency:** Implements buffer pooling to minimize memory allocations and garbage collection overhead during high-throughput I/O.
 * **Atomic Caching:** Validates file modification times (`mtime`) before and after reading to ensure consistency between the file content and the cached hash.
+* **Smart Invalidation:** Intelligent cache management that reuses existing hashes where possible and performs atomic invalidation upon file modification.
+* **Cleanup Utility:** Includes a built-in mechanism to remove all checksum metadata from files.
 * **Zero-Read Access:** checks existing metadata against the current file state. If the cache is valid, the hash is retrieved without reading the file from disk.
 
 ## Prerequisites
@@ -52,14 +55,33 @@ hashtag [flags] [path]
 | --- | --- | --- | --- |
 | `-w` | `int` | Number of parallel workers. | `NumCPU` |
 | `-v` | `bool` | Enable verbose logging. | `false` |
+| `-algos` | `string` | Comma-separated list of hash algorithms. | `sha256` |
+| `-clean` | `bool` | Force invalidation of existing caches (re-hash everything). | `false` |
+| `-remove` | `bool` | Remove all checksum attributes from files. | `false` |
 
 ### Examples
 
 **Standard execution:**
 
 ```bash
-# Process the current directory using default worker count
+# Process the current directory using default SHA-256
 hashtag .
+
+```
+
+**Multi-hash execution:**
+
+```bash
+# Compute both SHA-256 and BLAKE3
+hashtag -algos sha256,blake3 /mnt/data
+
+```
+
+**Clearing metadata:**
+
+```bash
+# Remove all user.checksum.* attributes recursively
+hashtag -remove /mnt/data
 
 ```
 
@@ -73,7 +95,7 @@ hashtag -w 32 /mnt/data/images
 
 ## Technical Specification
 
-This tool implements the specification defined in [`docs/file_hashing_via_xattrs.md`](https://www.google.com/search?q=docs/file_hashing_via_xattrs.md).
+This tool implements the specification defined in [`docs/file_hashing_via_xattrs.md`](docs/file_hashing_via_xattrs.md).
 
 ### Metadata Schema
 
@@ -81,7 +103,7 @@ The tool utilizes the `user.checksum` namespace.
 
 | Attribute Key | Value Format | Description |
 | --- | --- | --- |
-| `user.checksum.sha256` | Hex String | The SHA-256 digest of the file content. |
+| `user.checksum.<algo>` | Hex String | The digest of the file content (e.g., `user.checksum.sha256`, `user.checksum.blake3`). |
 | `user.checksum.mtime` | Unix Timestamp | The `mtime` (seconds) of the file when the hash was computed. |
 
 ### Verification
@@ -94,6 +116,7 @@ $ getfattr -d large_file.iso
 # file: large_file.iso
 user.checksum.mtime="1717654321"
 user.checksum.sha256="a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a6"
+user.checksum.blake3="..."
 
 ```
 
