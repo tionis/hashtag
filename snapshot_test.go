@@ -268,6 +268,63 @@ func TestSnapshotSubcommandsHistoryAndDiff(t *testing.T) {
 	}
 }
 
+func TestSnapshotSubcommandsInspectAndQuery(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	db, err := openSnapshotDB(dbPath)
+	if err != nil {
+		t.Fatalf("open snapshot db: %v", err)
+	}
+
+	entries := []treeEntry{
+		{
+			Name:        "a.txt",
+			Kind:        snapshotKindFile,
+			TargetHash:  strings.Repeat("a", 64),
+			Mode:        0o100644,
+			ModTimeUnix: 100,
+			Size:        3,
+			Tags:        []string{"music", "work"},
+			TagsHash:    hashNormalizedTags([]string{"music", "work"}),
+		},
+		{
+			Name:        "b.txt",
+			Kind:        snapshotKindFile,
+			TargetHash:  strings.Repeat("b", 64),
+			Mode:        0o100644,
+			ModTimeUnix: 100,
+			Size:        5,
+			Tags:        []string{"music"},
+			TagsHash:    hashNormalizedTags([]string{"music"}),
+		},
+	}
+	treeHash := hashTree(entries)
+
+	tx, err := db.Begin()
+	if err != nil {
+		db.Close()
+		t.Fatalf("begin tx: %v", err)
+	}
+	if err := insertTree(tx, treeHash, entries); err != nil {
+		tx.Rollback()
+		db.Close()
+		t.Fatalf("insert tree: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		db.Close()
+		t.Fatalf("commit tx: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if err := runSnapshotCommand([]string{"inspect", "-db", dbPath, "-tree", treeHash}); err != nil {
+		t.Fatalf("snapshot inspect command failed: %v", err)
+	}
+	if err := runSnapshotCommand([]string{"query", "-db", dbPath, "-tree", treeHash, "-tags", "music,work"}); err != nil {
+		t.Fatalf("snapshot query command failed: %v", err)
+	}
+}
+
 func TestSnapshotSchemaForeignKeysEnabled(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
 	db, err := openSnapshotDB(dbPath)

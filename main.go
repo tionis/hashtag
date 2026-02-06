@@ -103,7 +103,7 @@ func runHashCommand(args []string) error {
 	fs := flag.NewFlagSet("hash", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage:\n  %s hash [options] [path]\n  %s [hash options] [path]\n\nOptions:\n", projectBinaryName, projectBinaryName)
+		fmt.Fprintf(fs.Output(), "Usage:\n  %s hash [options] [path]\n\nOptions:\n", projectBinaryName)
 		fs.PrintDefaults()
 		fmt.Fprintf(fs.Output(), "\nSupported Hash Algorithms:\n  %s\n", strings.Join(getSortedAlgoNames(), ", "))
 	}

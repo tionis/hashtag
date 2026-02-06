@@ -28,7 +28,6 @@ const (
 
 	snapshotHashAlgo      = "blake3"
 	snapshotDBEnv         = "FORGE_SNAPSHOT_DB"
-	snapshotDBEnvLegacy   = "HASHTAG_SNAPSHOT_DB"
 	snapshotDBDirName     = "forge"
 	snapshotDBDefaultFile = "snapshot.db"
 
@@ -81,6 +80,10 @@ func runSnapshotCommand(args []string) error {
 			return runSnapshotHistoryCommand(args[1:])
 		case "diff":
 			return runSnapshotDiffCommand(args[1:])
+		case "inspect":
+			return runSnapshotInspectCommand(args[1:])
+		case "query":
+			return runSnapshotQueryCommand(args[1:])
 		}
 	}
 
@@ -93,7 +96,7 @@ func runSnapshotCreateCommand(args []string) error {
 	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage:\n  %s snapshot [options] [path]\n  %s snapshot history [options] [path]\n  %s snapshot diff [options] [path]\n\n", os.Args[0], os.Args[0], os.Args[0])
+		fmt.Fprintf(fs.Output(), "Usage:\n  %s snapshot [options] [path]\n  %s snapshot history [options] [path]\n  %s snapshot diff [options] [path]\n  %s snapshot inspect [options]\n  %s snapshot query [options]\n\n", os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 		fmt.Fprintln(fs.Output(), "Create a content-addressed filesystem snapshot and store a time/location pointer.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
@@ -349,9 +352,6 @@ func runSnapshotDiffCommand(args []string) error {
 func defaultSnapshotDBPath() string {
 	if custom := os.Getenv(snapshotDBEnv); custom != "" {
 		return custom
-	}
-	if customLegacy := os.Getenv(snapshotDBEnvLegacy); customLegacy != "" {
-		return customLegacy
 	}
 
 	dataHome := os.Getenv("XDG_DATA_HOME")
@@ -909,7 +909,7 @@ func shouldSkipSnapshotPath(path string, skips map[string]struct{}) bool {
 func hashTree(entries []treeEntry) string {
 	hasher := blake3.New()
 
-	writeHashString(hasher, "htag.tree.v2")
+	writeHashString(hasher, "forge.tree.v1")
 	writeHashUint32(hasher, uint32(len(entries)))
 
 	for _, entry := range entries {
@@ -941,28 +941,7 @@ func readNormalizedXDGTags(path string, verbose bool) ([]string, error) {
 		return nil, fmt.Errorf("read xattr %s for %q: %w", snapshotXDGTagsKey, path, err)
 	}
 
-	raw := strings.TrimSpace(string(data))
-	if raw == "" {
-		return nil, nil
-	}
-
-	raw = strings.ReplaceAll(raw, ";", ",")
-	parts := strings.Split(raw, ",")
-	seen := make(map[string]struct{}, len(parts))
-	tags := make([]string, 0, len(parts))
-	for _, part := range parts {
-		tag := strings.TrimSpace(part)
-		if tag == "" {
-			continue
-		}
-		if _, exists := seen[tag]; exists {
-			continue
-		}
-		seen[tag] = struct{}{}
-		tags = append(tags, tag)
-	}
-	sort.Strings(tags)
-	return tags, nil
+	return normalizeTags(string(data)), nil
 }
 
 func canIgnoreXattrReadError(err error) bool {
@@ -979,7 +958,7 @@ func hashNormalizedTags(tags []string) string {
 	}
 
 	h := blake3.New()
-	writeHashString(h, "htag.tags.v1")
+	writeHashString(h, "forge.tags.v1")
 	writeHashUint32(h, uint32(len(tags)))
 	for _, tag := range tags {
 		writeHashString(h, tag)

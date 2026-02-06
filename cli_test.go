@@ -2,27 +2,15 @@ package main
 
 import "testing"
 
-func TestShouldUseHashCompatibilityMode(t *testing.T) {
-	tests := []struct {
-		name string
-		args []string
-		want bool
-	}{
-		{name: "no args", args: nil, want: false},
-		{name: "hash command", args: []string{"hash"}, want: false},
-		{name: "snapshot command", args: []string{"snapshot"}, want: false},
-		{name: "help command", args: []string{"help"}, want: false},
-		{name: "hash flags shorthand", args: []string{"-algos", "blake3"}, want: true},
-		{name: "path shorthand", args: []string{"./data"}, want: true},
+func TestExecuteCLIDisallowsLegacyHashShorthand(t *testing.T) {
+	if err := executeCLI([]string{"-algos", "blake3"}); err == nil {
+		t.Fatal("expected error for legacy top-level hash flag shorthand")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := shouldUseHashCompatibilityMode(tt.args)
-			if got != tt.want {
-				t.Fatalf("shouldUseHashCompatibilityMode(%v)=%v want=%v", tt.args, got, tt.want)
-			}
-		})
+	if err := executeCLI([]string{"."}); err == nil {
+		t.Fatal("expected error for legacy top-level path shorthand")
+	}
+	if err := executeCLI([]string{"tag"}); err == nil {
+		t.Fatal("expected error for removed hash alias command")
 	}
 }
 
@@ -33,5 +21,23 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	}
 	if _, _, err := root.Find([]string{"snapshot"}); err != nil {
 		t.Fatalf("expected snapshot command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"hashmap"}); err != nil {
+		t.Fatalf("expected hashmap command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snapshot", "inspect"}); err != nil {
+		t.Fatalf("expected snapshot inspect command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snapshot", "query"}); err != nil {
+		t.Fatalf("expected snapshot query command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"hashmap", "ingest"}); err != nil {
+		t.Fatalf("expected hashmap ingest command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"hashmap", "lookup"}); err != nil {
+		t.Fatalf("expected hashmap lookup command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"hashmap", "show"}); err != nil {
+		t.Fatalf("expected hashmap show command to be registered: %v", err)
 	}
 }

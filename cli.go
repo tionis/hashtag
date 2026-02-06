@@ -20,34 +20,9 @@ func main() {
 }
 
 func executeCLI(args []string) error {
-	// Compatibility mode:
-	// - `forge .`
-	// - `forge -algos blake3 /path`
-	// continue to behave like hash mode.
-	if shouldUseHashCompatibilityMode(args) {
-		return runHashCommand(args)
-	}
-
 	root := newRootCommand()
 	root.SetArgs(args)
 	return root.Execute()
-}
-
-func shouldUseHashCompatibilityMode(args []string) bool {
-	if len(args) == 0 {
-		return false
-	}
-
-	switch args[0] {
-	case "hash", "snapshot", "help", "completion", "-h", "--help":
-		return false
-	}
-
-	if len(args[0]) > 0 && args[0][0] == '-' {
-		return true
-	}
-
-	return true
 }
 
 func newRootCommand() *cobra.Command {
@@ -61,6 +36,7 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(newHashCommand())
 	root.AddCommand(newSnapshotCommand())
+	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newCompletionCommand(root))
 	return root
 }
@@ -68,7 +44,6 @@ func newRootCommand() *cobra.Command {
 func newHashCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:                "hash [options] [path]",
-		Aliases:            []string{"tag"},
 		Short:              "Hash files and cache digests in xattrs.",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -112,8 +87,62 @@ func newSnapshotCommand() *cobra.Command {
 			return runSnapshotDiffCommand(args)
 		},
 	})
+	snapshotCmd.AddCommand(&cobra.Command{
+		Use:                "inspect [options]",
+		Short:              "Inspect entries and tags for a tree hash.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapshotInspectCommand(args)
+		},
+	})
+	snapshotCmd.AddCommand(&cobra.Command{
+		Use:                "query [options]",
+		Short:              "Query tree entries by required tags.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapshotQueryCommand(args)
+		},
+	})
 
 	return snapshotCmd
+}
+
+func newHashmapCommand() *cobra.Command {
+	hashmapCmd := &cobra.Command{
+		Use:                "hashmap",
+		Short:              "Manage mappings between BLAKE3 and other file digests.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	hashmapCmd.AddCommand(&cobra.Command{
+		Use:                "ingest [options] [path]",
+		Short:              "Scan files and ingest checksum xattr mappings.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runHashmapIngestCommand(args)
+		},
+	})
+	hashmapCmd.AddCommand(&cobra.Command{
+		Use:                "lookup [options]",
+		Short:              "Lookup BLAKE3 by external algorithm digest.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runHashmapLookupCommand(args)
+		},
+	})
+	hashmapCmd.AddCommand(&cobra.Command{
+		Use:                "show [options]",
+		Short:              "Show known algorithm digests for a BLAKE3 digest.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runHashmapShowCommand(args)
+		},
+	})
+
+	return hashmapCmd
 }
 
 func newCompletionCommand(root *cobra.Command) *cobra.Command {

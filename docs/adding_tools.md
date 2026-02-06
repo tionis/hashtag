@@ -8,6 +8,8 @@ Forge uses `cobra` for command scaffolding.
 - Existing tool implementation:
   - hash: `main.go`
   - snapshot: `snapshot.go`
+  - snapshot query/inspect helpers: `snapshot_query.go`
+  - hash mappings: `hashmap.go`
 
 ## Steps
 

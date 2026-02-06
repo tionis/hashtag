@@ -9,6 +9,13 @@ The snapshot system is metadata-only:
 - It stores path/time pointers to snapshot targets.
 - It does not store file blobs.
 
+CLI subcommands:
+- `forge snapshot create`
+- `forge snapshot history`
+- `forge snapshot diff`
+- `forge snapshot inspect`
+- `forge snapshot query`
+
 ## Hash Algorithms
 
 - File content identity: `blake3(content)` (hex).
@@ -17,7 +24,7 @@ The snapshot system is metadata-only:
 
 ## Tree Hashing (Canonical)
 
-Tree hash version marker: `htag.tree.v2`.
+Tree hash version marker: `forge.tree.v1`.
 
 Serialization order:
 1. Write version marker string.
@@ -51,7 +58,7 @@ Snapshot ingests `user.xdg.tags` and normalizes as follows:
 
 The normalized set is:
 - embedded into tree hash input
-- hashed with `htag.tags.v1` domain marker
+- hashed with `forge.tags.v1` domain marker
 - stored in `tree_entries.tags_hash`
 - stored relationally in `tags` + `tree_entry_tags`
 
@@ -87,7 +94,6 @@ During DB initialization:
 
 After init, foreign key enforcement is verified via `PRAGMA foreign_keys;` and startup fails if disabled.
 
-## Compatibility Notes
+## Versioning Note
 
-- Tree hash format changed from `v1` to `v2` when tag data was added to canonical serialization.
-- Legacy env var `${HASHTAG_SNAPSHOT_DB}` is still accepted for DB path override.
+- The current canonical tree hash marker is `forge.tree.v1`.

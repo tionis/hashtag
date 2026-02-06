@@ -4,7 +4,8 @@
 
 Current tools:
 - `forge hash`: concurrent file hashing with xattr caching (`user.checksum.*`).
-- `forge snapshot`: metadata-only filesystem snapshots with history and diff.
+- `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
+- `forge hashmap`: map external digests back to BLAKE3 identities.
 
 ## Install
 
@@ -21,10 +22,8 @@ forge <command> [options]
 Top-level commands:
 - `forge hash`
 - `forge snapshot`
+- `forge hashmap`
 - `forge completion`
-
-Compatibility mode:
-- `forge [hash options] [path]` is shorthand for `forge hash [hash options] [path]`.
 
 ## Hash Tool
 
@@ -69,15 +68,28 @@ Diff:
 forge snapshot diff [flags] [path]
 ```
 
+Inspect tree entries:
+
+```bash
+forge snapshot inspect -tree <tree_hash> [flags]
+```
+
+Query entries by tags:
+
+```bash
+forge snapshot query -tree <tree_hash> -tags tag1,tag2 [flags]
+```
+
 Snapshot flags:
 - `-db`: snapshot DB path (default from `${FORGE_SNAPSHOT_DB}` or `${XDG_DATA_HOME}/forge/snapshot.db`, fallback `~/.local/share/forge/snapshot.db`)
 - `-v`: verbose output (create)
 - `-limit`: max rows (history)
 - `-from`: older snapshot time in unix ns (diff)
 - `-to`: newer snapshot time in unix ns (diff)
-
-Migration compatibility:
-- legacy `${HASHTAG_SNAPSHOT_DB}` is still honored.
+- `-tree`: tree hash selector (inspect/query)
+- `-recursive`: include descendant tree entries (inspect)
+- `-tags`: required tags filter (query)
+- `-kind`: query kind filter (`file|symlink|tree|all`, default `file`)
 
 Diff behavior:
 - Without `-from/-to`: compares the two newest snapshots for the path.
@@ -91,7 +103,7 @@ Diff codes:
 
 Snapshot metadata:
 - `user.xdg.tags` is ingested as normalized tags and stored as first-class relational data.
-- Tree hashes are content-addressed using BLAKE3 over canonical tree serialization (`htag.tree.v2`).
+- Tree hashes are content-addressed using BLAKE3 over canonical tree serialization (`forge.tree.v1`).
 
 Snapshot database tables:
 - `trees`
@@ -101,10 +113,38 @@ Snapshot database tables:
 - `pointers`
 - `hash_mappings` (minimal `(blake3, algo) -> digest` mapping table)
 
+## Hashmap Tool
+
+Ingest checksum xattrs into the mapping table:
+
+```bash
+forge hashmap ingest [flags] [path]
+```
+
+Lookup BLAKE3 by external digest:
+
+```bash
+forge hashmap lookup -algo sha256 -digest <sha256>
+```
+
+Show external digests known for a BLAKE3:
+
+```bash
+forge hashmap show -blake3 <blake3>
+```
+
+Hashmap flags:
+- `-db`: snapshot DB path (same default resolution as `forge snapshot`)
+- `-v`: verbose output (ingest)
+- `-algo`: algorithm name (lookup)
+- `-digest`: digest value (lookup)
+- `-blake3`: BLAKE3 digest value (show)
+
 ## Documentation
 
 - Docs index: [`docs/README.md`](docs/README.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
+- Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tool rules: [`docs/tool_rules.md`](docs/tool_rules.md)
 - Adding tools: [`docs/adding_tools.md`](docs/adding_tools.md)
 - Hash metadata spec: [`docs/file_hashing_via_xattrs.md`](docs/file_hashing_via_xattrs.md)
