@@ -119,6 +119,7 @@ Snapshot flags:
 - `-db`: snapshot DB path (default from `${FORGE_SNAPSHOT_DB}` or `${XDG_DATA_HOME}/forge/snapshot.db`, fallback `~/.local/share/forge/snapshot.db`)
 - `-output`: output mode `auto|pretty|kv|json` (create/history/diff/inspect/query, default `auto`)
 - `-v`: verbose output (create)
+- `-strict`: fail immediately on permission/transient scan errors (create)
 - `-limit`: max rows (history)
 - `-from`: older snapshot time in unix ns (diff)
 - `-to`: newer snapshot time in unix ns (diff)
@@ -136,6 +137,11 @@ Diff codes:
 - `D`: removed path
 - `M`: modified path (hash and/or metadata)
 - `T`: type changed (`file`/`tree`/`symlink`)
+
+Snapshot create error behavior:
+- Default: permission-denied and transient missing-path scan errors are skipped with warnings; snapshot is still committed.
+- Default warning exit code: `2` (partial success).
+- Strict mode (`-strict`): these warnings become hard errors and snapshot creation fails with exit code `1`.
 
 Snapshot metadata:
 - `user.xdg.tags` is ingested as normalized tags and stored as first-class relational data.

@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	stderrors "errors"
+	"testing"
+)
 
 func TestExecuteCLIDisallowsLegacyHashShorthand(t *testing.T) {
 	if err := executeCLI([]string{"-algos", "blake3"}); err == nil {
@@ -60,5 +63,20 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	}
 	if _, _, err := root.Find([]string{"tags", "clear"}); err != nil {
 		t.Fatalf("expected tags clear command to be registered: %v", err)
+	}
+}
+
+func TestResolveCLIExitCode(t *testing.T) {
+	if got := resolveCLIExitCode(nil); got != 0 {
+		t.Fatalf("expected nil error to resolve exit code 0, got %d", got)
+	}
+
+	if got := resolveCLIExitCode(stderrors.New("boom")); got != exitCodeFailure {
+		t.Fatalf("expected regular error to resolve exit code %d, got %d", exitCodeFailure, got)
+	}
+
+	partial := newCLIExitError(exitCodePartialWarnings, stderrors.New("partial"))
+	if got := resolveCLIExitCode(partial); got != exitCodePartialWarnings {
+		t.Fatalf("expected partial warning error to resolve exit code %d, got %d", exitCodePartialWarnings, got)
 	}
 }

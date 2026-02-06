@@ -11,11 +11,55 @@ import (
 const (
 	projectBinaryName = "forge"
 	projectModulePath = "github.com/tionis/forge"
+
+	exitCodeFailure         = 1
+	exitCodePartialWarnings = 2
 )
+
+type cliExitError struct {
+	code  int
+	cause error
+}
+
+func (e cliExitError) Error() string {
+	if e.cause == nil {
+		return ""
+	}
+	return e.cause.Error()
+}
+
+func (e cliExitError) Unwrap() error {
+	return e.cause
+}
+
+func (e cliExitError) ExitCode() int {
+	return e.code
+}
+
+func newCLIExitError(code int, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return cliExitError{code: code, cause: cause}
+}
+
+func resolveCLIExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	if coder, ok := err.(interface{ ExitCode() int }); ok {
+		code := coder.ExitCode()
+		if code > 0 {
+			return code
+		}
+	}
+	return exitCodeFailure
+}
 
 func main() {
 	if err := executeCLI(os.Args[1:]); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		os.Exit(resolveCLIExitCode(err))
 	}
 }
 

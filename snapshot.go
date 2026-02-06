@@ -33,19 +33,25 @@ const (
 	snapshotDBDefaultFile = "snapshot.db"
 
 	snapshotXDGTagsKey = "user.xdg.tags"
+
+	snapshotWarningSampleLimit = 5
 )
 
 var snapshotLstat = os.Lstat
+var snapshotReadDir = os.ReadDir
 
 type snapshotStats struct {
-	trees    int
-	files    int
-	symlinks int
-	special  int
+	trees          int
+	files          int
+	symlinks       int
+	special        int
+	warnings       int
+	warningSamples []string
 }
 
 type snapshotOptions struct {
 	verbose      bool
+	strict       bool
 	skipAbsPaths map[string]struct{}
 }
 
@@ -80,6 +86,7 @@ type snapshotCreateStatsOutput struct {
 	Files    int `json:"files"`
 	Symlinks int `json:"symlinks"`
 	Special  int `json:"special"`
+	Warnings int `json:"warnings"`
 }
 
 type snapshotCreateOutput struct {
@@ -145,11 +152,12 @@ func renderSnapshotCreateOutput(mode string, output snapshotCreateOutput) error 
 		fmt.Printf("target_hash=%s\n", output.TargetHash)
 		fmt.Printf("db=%s\n", output.DB)
 		fmt.Printf(
-			"trees=%d files=%d symlinks=%d special=%d\n",
+			"trees=%d files=%d symlinks=%d special=%d warnings=%d\n",
 			output.Stats.Trees,
 			output.Stats.Files,
 			output.Stats.Symlinks,
 			output.Stats.Special,
+			output.Stats.Warnings,
 		)
 		return nil
 	case outputModeJSON:
@@ -169,6 +177,7 @@ func renderSnapshotCreateOutput(mode string, output snapshotCreateOutput) error 
 			{Label: "Files", Value: strconv.Itoa(output.Stats.Files)},
 			{Label: "Symlinks", Value: strconv.Itoa(output.Stats.Symlinks)},
 			{Label: "Special", Value: strconv.Itoa(output.Stats.Special)},
+			{Label: "Warnings", Value: strconv.Itoa(output.Stats.Warnings)},
 		})
 		return nil
 	default:
@@ -309,6 +318,7 @@ func runSnapshotCreateCommand(args []string) error {
 
 	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
 	verbose := fs.Bool("v", false, "Verbose output")
+	strict := fs.Bool("strict", false, "Fail immediately on scan warnings (permission or transient path errors)")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -338,6 +348,7 @@ func runSnapshotCreateCommand(args []string) error {
 
 	opts := snapshotOptions{
 		verbose: *verbose,
+		strict:  *strict,
 		skipAbsPaths: map[string]struct{}{
 			absDBPath:          {},
 			absDBPath + "-wal": {},
@@ -402,7 +413,7 @@ func runSnapshotCreateCommand(args []string) error {
 		return fmt.Errorf("commit snapshot transaction: %w", err)
 	}
 
-	return renderSnapshotCreateOutput(
+	if err := renderSnapshotCreateOutput(
 		resolvedOutputMode,
 		snapshotCreateOutput{
 			SnapshotTimeNS:  snapshotTime,
@@ -416,9 +427,28 @@ func runSnapshotCreateCommand(args []string) error {
 				Files:    stats.files,
 				Symlinks: stats.symlinks,
 				Special:  stats.special,
+				Warnings: stats.warnings,
 			},
 		},
-	)
+	); err != nil {
+		return err
+	}
+
+	if stats.warnings == 0 {
+		return nil
+	}
+
+	log.Printf("[snapshot] completed with warnings: skipped %d path(s) due to permission/transient errors", stats.warnings)
+	if !opts.verbose {
+		for _, warning := range stats.warningSamples {
+			log.Printf("[snapshot] warning: %s", warning)
+		}
+		if stats.warnings > len(stats.warningSamples) {
+			log.Printf("[snapshot] warning: ... and %d more (use -v for per-path warnings)", stats.warnings-len(stats.warningSamples))
+		}
+	}
+
+	return newCLIExitError(exitCodePartialWarnings, fmt.Errorf("snapshot completed with warnings"))
 }
 
 func runSnapshotHistoryCommand(args []string) error {
@@ -1120,7 +1150,7 @@ func loadTreeEntries(db *sql.DB, cache map[string][]treeEntry, treeHash string) 
 }
 
 func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snapshotOptions) (string, error) {
-	dirEntries, err := os.ReadDir(dirPath)
+	dirEntries, err := snapshotReadDir(dirPath)
 	if err != nil {
 		return "", fmt.Errorf("read directory %q: %w", dirPath, err)
 	}
@@ -1135,10 +1165,7 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 
 		info, err := snapshotLstat(childPath)
 		if err != nil {
-			if canIgnoreSnapshotPathError(err) {
-				if opts.verbose {
-					log.Printf("[snapshot] path disappeared during scan, skipping %s: %v", childPath, err)
-				}
+			if recordSnapshotWarningIfRecoverable(stats, opts, "lstat", childPath, err) {
 				continue
 			}
 			return "", fmt.Errorf("lstat %q: %w", childPath, err)
@@ -1161,10 +1188,7 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 		case info.IsDir():
 			childTreeHash, err := ingestDirectory(tx, childPath, stats, opts)
 			if err != nil {
-				if canIgnoreSnapshotPathError(err) {
-					if opts.verbose {
-						log.Printf("[snapshot] directory disappeared during scan, skipping %s: %v", childPath, err)
-					}
+				if recordSnapshotWarningIfRecoverable(stats, opts, "ingest directory", childPath, err) {
 					continue
 				}
 				return "", err
@@ -1174,10 +1198,7 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 		case info.Mode().IsRegular():
 			fileHash, err := hashRegularFileForSnapshot(childPath, info, opts.verbose)
 			if err != nil {
-				if canIgnoreSnapshotPathError(err) {
-					if opts.verbose {
-						log.Printf("[snapshot] file disappeared during scan, skipping %s: %v", childPath, err)
-					}
+				if recordSnapshotWarningIfRecoverable(stats, opts, "hash file", childPath, err) {
 					continue
 				}
 				return "", err
@@ -1188,10 +1209,7 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 		case info.Mode()&os.ModeSymlink != 0:
 			linkHash, linkTarget, err := hashSymlink(childPath)
 			if err != nil {
-				if canIgnoreSnapshotPathError(err) {
-					if opts.verbose {
-						log.Printf("[snapshot] symlink disappeared during scan, skipping %s: %v", childPath, err)
-					}
+				if recordSnapshotWarningIfRecoverable(stats, opts, "read symlink", childPath, err) {
 					continue
 				}
 				return "", err
@@ -1228,8 +1246,27 @@ func shouldSkipSnapshotPath(path string, skips map[string]struct{}) bool {
 	return exists
 }
 
+func recordSnapshotWarningIfRecoverable(stats *snapshotStats, opts snapshotOptions, op, path string, err error) bool {
+	if opts.strict || !canIgnoreSnapshotPathError(err) {
+		return false
+	}
+
+	stats.warnings++
+	message := fmt.Sprintf("%s %q: %v", op, path, err)
+	if len(stats.warningSamples) < snapshotWarningSampleLimit {
+		stats.warningSamples = append(stats.warningSamples, message)
+	}
+	if opts.verbose {
+		log.Printf("[snapshot] warning: %s", message)
+	}
+	return true
+}
+
 func canIgnoreSnapshotPathError(err error) bool {
-	return os.IsNotExist(err) || stderrors.Is(err, syscall.ENOTDIR)
+	return os.IsNotExist(err) ||
+		stderrors.Is(err, syscall.ENOTDIR) ||
+		stderrors.Is(err, syscall.EACCES) ||
+		stderrors.Is(err, syscall.EPERM)
 }
 
 func hashTree(entries []treeEntry) string {

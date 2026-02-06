@@ -143,8 +143,12 @@ func TestSnapshotCommandSkipsDisappearedEntries(t *testing.T) {
 	}()
 
 	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
-	if err := runSnapshotCommand([]string{"-db", dbPath, root}); err != nil {
-		t.Fatalf("run snapshot command: %v", err)
+	err := runSnapshotCommand([]string{"-db", dbPath, root})
+	if err == nil {
+		t.Fatal("expected partial warning exit when entries disappear during scan")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodePartialWarnings {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodePartialWarnings, code, err)
 	}
 
 	db, err := sql.Open("sqlite", dbPath)
@@ -166,6 +170,101 @@ func TestSnapshotCommandSkipsDisappearedEntries(t *testing.T) {
 	}
 	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'vanish.txt'", rootTreeHash); got != 0 {
 		t.Fatalf("expected vanish.txt to be skipped, got %d entries", got)
+	}
+}
+
+func TestSnapshotCommandSkipsPermissionDeniedDirectoryByDefault(t *testing.T) {
+	root := t.TempDir()
+	keepPath := filepath.Join(root, "keep.txt")
+	lockedDir := filepath.Join(root, "locked")
+	insideLocked := filepath.Join(lockedDir, "secret.txt")
+	if err := os.WriteFile(keepPath, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.MkdirAll(lockedDir, 0o755); err != nil {
+		t.Fatalf("mkdir locked dir: %v", err)
+	}
+	if err := os.WriteFile(insideLocked, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write secret file: %v", err)
+	}
+
+	origReadDir := snapshotReadDir
+	snapshotReadDir = func(path string) ([]os.DirEntry, error) {
+		if path == lockedDir {
+			return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EACCES}
+		}
+		return origReadDir(path)
+	}
+	defer func() {
+		snapshotReadDir = origReadDir
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err := runSnapshotCommand([]string{"-db", dbPath, root})
+	if err == nil {
+		t.Fatal("expected partial warning exit when permission-denied directory is skipped")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodePartialWarnings {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodePartialWarnings, code, err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var rootTreeHash string
+	if err := db.QueryRow("SELECT target_hash FROM pointers ORDER BY id DESC LIMIT 1").Scan(&rootTreeHash); err != nil {
+		t.Fatalf("query root tree hash: %v", err)
+	}
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'keep.txt'", rootTreeHash); got != 1 {
+		t.Fatalf("expected keep.txt to remain in snapshot, got %d entries", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'locked'", rootTreeHash); got != 0 {
+		t.Fatalf("expected locked directory to be skipped, got %d entries", got)
+	}
+}
+
+func TestSnapshotCommandStrictModeFailsOnPermissionDeniedDirectory(t *testing.T) {
+	root := t.TempDir()
+	lockedDir := filepath.Join(root, "locked")
+	if err := os.MkdirAll(lockedDir, 0o755); err != nil {
+		t.Fatalf("mkdir locked dir: %v", err)
+	}
+
+	origReadDir := snapshotReadDir
+	snapshotReadDir = func(path string) ([]os.DirEntry, error) {
+		if path == lockedDir {
+			return nil, &os.PathError{Op: "open", Path: path, Err: syscall.EACCES}
+		}
+		return origReadDir(path)
+	}
+	defer func() {
+		snapshotReadDir = origReadDir
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err := runSnapshotCommand([]string{"-db", dbPath, "-strict", root})
+	if err == nil {
+		t.Fatal("expected strict mode to fail on permission-denied directory")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodeFailure {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodeFailure, code, err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("expected permission denied error, got: %v", err)
+	}
+
+	db, openErr := sql.Open("sqlite", dbPath)
+	if openErr != nil {
+		t.Fatalf("open sqlite: %v", openErr)
+	}
+	defer db.Close()
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 0 {
+		t.Fatalf("expected no snapshot pointer to be committed, got %d", got)
 	}
 }
 
@@ -668,7 +767,12 @@ func TestCanIgnoreSnapshotPathError(t *testing.T) {
 		{
 			name: "permission denied",
 			err:  &os.PathError{Op: "lstat", Path: "/tmp/protected", Err: syscall.EACCES},
-			want: false,
+			want: true,
+		},
+		{
+			name: "operation not permitted",
+			err:  &os.PathError{Op: "lstat", Path: "/tmp/protected", Err: syscall.EPERM},
+			want: true,
 		},
 	}
 
