@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,6 +266,56 @@ func TestSnapshotCommandStrictModeFailsOnPermissionDeniedDirectory(t *testing.T)
 
 	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 0 {
 		t.Fatalf("expected no snapshot pointer to be committed, got %d", got)
+	}
+}
+
+func TestSnapshotCommandSkipsFileChangedDuringHashing(t *testing.T) {
+	root := t.TempDir()
+	keepPath := filepath.Join(root, "keep.txt")
+	changingPath := filepath.Join(root, "changing.txt")
+	if err := os.WriteFile(keepPath, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.WriteFile(changingPath, []byte("changing"), 0o644); err != nil {
+		t.Fatalf("write changing file: %v", err)
+	}
+
+	origHashRegular := snapshotHashRegularFile
+	snapshotHashRegularFile = func(path string, info os.FileInfo, verbose bool) (string, error) {
+		if path == changingPath {
+			return "", fmt.Errorf("%w %q", errSnapshotFileChanged, path)
+		}
+		return origHashRegular(path, info, verbose)
+	}
+	defer func() {
+		snapshotHashRegularFile = origHashRegular
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err := runSnapshotCommand([]string{"-db", dbPath, root})
+	if err == nil {
+		t.Fatal("expected partial warning exit when file changes during hashing")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodePartialWarnings {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodePartialWarnings, code, err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var rootTreeHash string
+	if err := db.QueryRow("SELECT target_hash FROM pointers ORDER BY id DESC LIMIT 1").Scan(&rootTreeHash); err != nil {
+		t.Fatalf("query root tree hash: %v", err)
+	}
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'keep.txt'", rootTreeHash); got != 1 {
+		t.Fatalf("expected keep.txt to remain in snapshot, got %d entries", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'changing.txt'", rootTreeHash); got != 0 {
+		t.Fatalf("expected changing.txt to be skipped, got %d entries", got)
 	}
 }
 
@@ -782,6 +833,13 @@ func TestCanIgnoreSnapshotPathError(t *testing.T) {
 				t.Fatalf("canIgnoreSnapshotPathError(%v)=%v want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCanIgnoreSnapshotIngestError(t *testing.T) {
+	err := fmt.Errorf("%w %q", errSnapshotFileChanged, "/tmp/file")
+	if got := canIgnoreSnapshotIngestError(err); !got {
+		t.Fatalf("expected file-changed hashing error to be ignored in non-strict mode")
 	}
 }
 

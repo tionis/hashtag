@@ -39,6 +39,9 @@ const (
 
 var snapshotLstat = os.Lstat
 var snapshotReadDir = os.ReadDir
+var snapshotHashRegularFile = hashRegularFileForSnapshot
+
+var errSnapshotFileChanged = stderrors.New("file changed while hashing")
 
 type snapshotStats struct {
 	trees          int
@@ -1196,7 +1199,7 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 			entry.Kind = snapshotKindTree
 			entry.TargetHash = childTreeHash
 		case info.Mode().IsRegular():
-			fileHash, err := hashRegularFileForSnapshot(childPath, info, opts.verbose)
+			fileHash, err := snapshotHashRegularFile(childPath, info, opts.verbose)
 			if err != nil {
 				if recordSnapshotWarningIfRecoverable(stats, opts, "hash file", childPath, err) {
 					continue
@@ -1247,7 +1250,7 @@ func shouldSkipSnapshotPath(path string, skips map[string]struct{}) bool {
 }
 
 func recordSnapshotWarningIfRecoverable(stats *snapshotStats, opts snapshotOptions, op, path string, err error) bool {
-	if opts.strict || !canIgnoreSnapshotPathError(err) {
+	if opts.strict || !canIgnoreSnapshotIngestError(err) {
 		return false
 	}
 
@@ -1260,6 +1263,10 @@ func recordSnapshotWarningIfRecoverable(stats *snapshotStats, opts snapshotOptio
 		log.Printf("[snapshot] warning: %s", message)
 	}
 	return true
+}
+
+func canIgnoreSnapshotIngestError(err error) bool {
+	return canIgnoreSnapshotPathError(err) || stderrors.Is(err, errSnapshotFileChanged)
 }
 
 func canIgnoreSnapshotPathError(err error) bool {
@@ -1473,7 +1480,7 @@ func hashRegularFileForSnapshot(path string, info os.FileInfo, verbose bool) (st
 		return "", fmt.Errorf("re-stat file %q: %w", path, err)
 	}
 	if info.ModTime() != infoPost.ModTime() {
-		return "", fmt.Errorf("file changed while hashing %q", path)
+		return "", fmt.Errorf("%w %q", errSnapshotFileChanged, path)
 	}
 
 	digest := hex.EncodeToString(hasher.Sum(nil))

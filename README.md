@@ -139,7 +139,7 @@ Diff codes:
 - `T`: type changed (`file`/`tree`/`symlink`)
 
 Snapshot create error behavior:
-- Default: permission-denied and transient missing-path scan errors are skipped with warnings; snapshot is still committed.
+- Default: permission-denied, transient missing-path scan errors, and file-changed-during-hash races are skipped with warnings; snapshot is still committed.
 - Default warning exit code: `2` (partial success).
 - Strict mode (`-strict`): these warnings become hard errors and snapshot creation fails with exit code `1`.
 
