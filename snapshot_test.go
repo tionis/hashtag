@@ -120,6 +120,55 @@ func TestSnapshotCommandSkipsSnapshotDBFilesInsideTarget(t *testing.T) {
 	}
 }
 
+func TestSnapshotCommandSkipsDisappearedEntries(t *testing.T) {
+	root := t.TempDir()
+	keepPath := filepath.Join(root, "keep.txt")
+	missingPath := filepath.Join(root, "vanish.txt")
+	if err := os.WriteFile(keepPath, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.WriteFile(missingPath, []byte("vanish"), 0o644); err != nil {
+		t.Fatalf("write vanish file: %v", err)
+	}
+
+	origLstat := snapshotLstat
+	snapshotLstat = func(path string) (os.FileInfo, error) {
+		if path == missingPath {
+			return nil, &os.PathError{Op: "lstat", Path: path, Err: syscall.ENOENT}
+		}
+		return origLstat(path)
+	}
+	defer func() {
+		snapshotLstat = origLstat
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := runSnapshotCommand([]string{"-db", dbPath, root}); err != nil {
+		t.Fatalf("run snapshot command: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var rootTreeHash string
+	if err := db.QueryRow("SELECT target_hash FROM pointers ORDER BY id DESC LIMIT 1").Scan(&rootTreeHash); err != nil {
+		t.Fatalf("query root tree hash: %v", err)
+	}
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ?", rootTreeHash); got != 1 {
+		t.Fatalf("expected only 1 root entry after skipping disappeared file, got %d", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'keep.txt'", rootTreeHash); got != 1 {
+		t.Fatalf("expected keep.txt to remain in snapshot, got %d entries", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'vanish.txt'", rootTreeHash); got != 0 {
+		t.Fatalf("expected vanish.txt to be skipped, got %d entries", got)
+	}
+}
+
 func TestSnapshotCommandRejectsSnapshottingDatabaseFile(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "snapshot.db")
@@ -595,6 +644,38 @@ func TestCanIgnoreXattrReadError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := canIgnoreXattrReadError(tt.err); got != tt.want {
 				t.Fatalf("canIgnoreXattrReadError(%v)=%v want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanIgnoreSnapshotPathError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "missing path",
+			err:  &os.PathError{Op: "lstat", Path: "/tmp/missing", Err: syscall.ENOENT},
+			want: true,
+		},
+		{
+			name: "not directory anymore",
+			err:  &os.PathError{Op: "open", Path: "/tmp/file/child", Err: syscall.ENOTDIR},
+			want: true,
+		},
+		{
+			name: "permission denied",
+			err:  &os.PathError{Op: "lstat", Path: "/tmp/protected", Err: syscall.EACCES},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canIgnoreSnapshotPathError(tt.err); got != tt.want {
+				t.Fatalf("canIgnoreSnapshotPathError(%v)=%v want %v", tt.err, got, tt.want)
 			}
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	stderrors "errors"
 	"flag"
 	"fmt"
 	"hash"
@@ -33,6 +34,8 @@ const (
 
 	snapshotXDGTagsKey = "user.xdg.tags"
 )
+
+var snapshotLstat = os.Lstat
 
 type snapshotStats struct {
 	trees    int
@@ -1130,8 +1133,14 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 			continue
 		}
 
-		info, err := os.Lstat(childPath)
+		info, err := snapshotLstat(childPath)
 		if err != nil {
+			if canIgnoreSnapshotPathError(err) {
+				if opts.verbose {
+					log.Printf("[snapshot] path disappeared during scan, skipping %s: %v", childPath, err)
+				}
+				continue
+			}
 			return "", fmt.Errorf("lstat %q: %w", childPath, err)
 		}
 
@@ -1152,6 +1161,12 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 		case info.IsDir():
 			childTreeHash, err := ingestDirectory(tx, childPath, stats, opts)
 			if err != nil {
+				if canIgnoreSnapshotPathError(err) {
+					if opts.verbose {
+						log.Printf("[snapshot] directory disappeared during scan, skipping %s: %v", childPath, err)
+					}
+					continue
+				}
 				return "", err
 			}
 			entry.Kind = snapshotKindTree
@@ -1159,6 +1174,12 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 		case info.Mode().IsRegular():
 			fileHash, err := hashRegularFileForSnapshot(childPath, info, opts.verbose)
 			if err != nil {
+				if canIgnoreSnapshotPathError(err) {
+					if opts.verbose {
+						log.Printf("[snapshot] file disappeared during scan, skipping %s: %v", childPath, err)
+					}
+					continue
+				}
 				return "", err
 			}
 			entry.Kind = snapshotKindFile
@@ -1167,6 +1188,12 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 		case info.Mode()&os.ModeSymlink != 0:
 			linkHash, linkTarget, err := hashSymlink(childPath)
 			if err != nil {
+				if canIgnoreSnapshotPathError(err) {
+					if opts.verbose {
+						log.Printf("[snapshot] symlink disappeared during scan, skipping %s: %v", childPath, err)
+					}
+					continue
+				}
 				return "", err
 			}
 			entry.Kind = "symlink"
@@ -1199,6 +1226,10 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 func shouldSkipSnapshotPath(path string, skips map[string]struct{}) bool {
 	_, exists := skips[path]
 	return exists
+}
+
+func canIgnoreSnapshotPathError(err error) bool {
+	return os.IsNotExist(err) || stderrors.Is(err, syscall.ENOTDIR)
 }
 
 func hashTree(entries []treeEntry) string {
