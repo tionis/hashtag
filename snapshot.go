@@ -946,6 +946,7 @@ func readNormalizedXDGTags(path string, verbose bool) ([]string, error) {
 
 func canIgnoreXattrReadError(err error) bool {
 	return err == syscall.ENODATA ||
+		err == syscall.ENOENT ||
 		err == syscall.EPERM ||
 		err == syscall.EACCES ||
 		err == syscall.ENOTSUP ||

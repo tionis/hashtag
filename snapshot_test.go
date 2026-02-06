@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -419,6 +420,27 @@ func TestHashMappingsTableStoresMinimalMapping(t *testing.T) {
 	}
 	if got != sha256Digest {
 		t.Fatalf("expected digest %s, got %s", sha256Digest, got)
+	}
+}
+
+func TestCanIgnoreXattrReadError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "missing xattr", err: syscall.ENODATA, want: true},
+		{name: "missing file", err: syscall.ENOENT, want: true},
+		{name: "permission denied", err: syscall.EPERM, want: true},
+		{name: "io error", err: syscall.EIO, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canIgnoreXattrReadError(tt.err); got != tt.want {
+				t.Fatalf("canIgnoreXattrReadError(%v)=%v want %v", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
