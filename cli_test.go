@@ -19,6 +19,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"hash"}); err != nil {
 		t.Fatalf("expected hash command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"dupes"}); err != nil {
+		t.Fatalf("expected dupes command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"snapshot"}); err != nil {
 		t.Fatalf("expected snapshot command to be registered: %v", err)
 	}

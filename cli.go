@@ -35,6 +35,7 @@ func newRootCommand() *cobra.Command {
 	}
 
 	root.AddCommand(newHashCommand())
+	root.AddCommand(newDupesCommand())
 	root.AddCommand(newSnapshotCommand())
 	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newCompletionCommand(root))
@@ -48,6 +49,17 @@ func newHashCommand() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runHashCommand(args)
+		},
+	}
+}
+
+func newDupesCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:                "dupes [options] [path]",
+		Short:              "Find duplicate files by content.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDupesCommand(args)
 		},
 	}
 }

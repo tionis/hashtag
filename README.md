@@ -4,6 +4,7 @@
 
 Current tools:
 - `forge hash`: concurrent file hashing with xattr caching (`user.checksum.*`).
+- `forge dupes`: duplicate-file detection by content hash.
 - `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
 - `forge hashmap`: map external digests back to BLAKE3 identities.
 
@@ -21,6 +22,7 @@ forge <command> [options]
 
 Top-level commands:
 - `forge hash`
+- `forge dupes`
 - `forge snapshot`
 - `forge hashmap`
 - `forge completion`
@@ -45,6 +47,30 @@ forge hash .
 forge hash -algos blake3,sha256 /data
 forge hash -remove /data
 ```
+
+## Dupes Tool
+
+```bash
+forge dupes [flags] [path]
+```
+
+Flags:
+- `-min-size`: only consider files with size >= `min-size` bytes (default `1`)
+- `-cache`: use `user.checksum.blake3` + `user.checksum.mtime` cache when valid (default `true`)
+- `-update-cache`: write missing/stale BLAKE3 cache values while scanning (default `false`)
+- `-output`: output mode `table|json|paths|paths0` (default `table`)
+- `-v`: verbose output
+
+`-output` modes:
+- `table`: summary `key=value` lines plus `group/hash/size/path` table
+- `json`: full structured JSON document
+- `paths`: duplicate file paths, one per line
+- `paths0`: duplicate file paths, NUL-delimited (`\0`)
+
+Summary fields:
+- `groups`: number of duplicate-content groups
+- `duplicate_files`: total number of files that belong to duplicate groups
+- `wasted_bytes`: estimated duplicate storage (`sum(size * (copies-1))`)
 
 ## Snapshot Tool
 
@@ -143,6 +169,7 @@ Hashmap flags:
 ## Documentation
 
 - Docs index: [`docs/README.md`](docs/README.md)
+- Dupes tool: [`docs/dupes_tool.md`](docs/dupes_tool.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
 - Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tool rules: [`docs/tool_rules.md`](docs/tool_rules.md)
