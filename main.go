@@ -93,19 +93,31 @@ var availableAlgos = map[string]AlgoFactory{
 	"xxhash": func() hash.Hash { return xxhash.New() },
 }
 
-func main() {
+func runHashCommand(args []string) error {
+	atomic.StoreUint64(&filesChecked, 0)
+	atomic.StoreUint64(&filesHashed, 0)
+	atomic.StoreUint64(&filesSkipped, 0)
+	atomic.StoreUint64(&errors, 0)
+
 	// Parse CLI args
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options] [root_dir]\n\nOptions:\n", os.Args[0])
-		flag.PrintDefaults()
-		fmt.Fprintf(flag.CommandLine.Output(), "\nSupported Hash Algorithms:\n  %s\n", strings.Join(getSortedAlgoNames(), ", "))
+	fs := flag.NewFlagSet("hash", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage:\n  %s hash [options] [path]\n  %s [hash options] [path]\n\nOptions:\n", projectBinaryName, projectBinaryName)
+		fs.PrintDefaults()
+		fmt.Fprintf(fs.Output(), "\nSupported Hash Algorithms:\n  %s\n", strings.Join(getSortedAlgoNames(), ", "))
 	}
-	workers := flag.Int("w", runtime.NumCPU(), "Number of parallel workers")
-	verbose := flag.Bool("v", false, "Verbose output")
-	algosFlag := flag.String("algos", "sha256", "Comma-separated list of hash algorithms to use")
-	clean := flag.Bool("clean", false, "Force invalidation of existing caches (re-hash everything)")
-	remove := flag.Bool("remove", false, "Remove all checksum attributes from files instead of hashing")
-	flag.Parse()
+	workers := fs.Int("w", runtime.NumCPU(), "Number of parallel workers")
+	verbose := fs.Bool("v", false, "Verbose output")
+	algosFlag := fs.String("algos", "blake3", "Comma-separated list of hash algorithms to use")
+	clean := fs.Bool("clean", false, "Force invalidation of existing caches (re-hash everything)")
+	remove := fs.Bool("remove", false, "Remove all checksum attributes from files instead of hashing")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return fmt.Errorf("parse hash flags: %w", err)
+	}
 
 	var factories = make(map[string]AlgoFactory)
 	if !*remove {
@@ -127,16 +139,16 @@ func main() {
 			if factory, ok := availableAlgos[name]; ok {
 				factories[name] = factory
 			} else {
-				log.Fatalf("Unknown algorithm: %s. Available: %s", name, strings.Join(getSortedAlgoNames(), ", "))
+				return fmt.Errorf("unknown algorithm %q. Available: %s", name, strings.Join(getSortedAlgoNames(), ", "))
 			}
 		}
 
 		if len(factories) == 0 {
-			log.Fatal("No valid algorithms specified.")
+			return fmt.Errorf("no valid algorithms specified")
 		}
 	}
 
-	root := flag.Arg(0)
+	root := fs.Arg(0)
 	if root == "" {
 		root = "."
 	}
@@ -145,7 +157,7 @@ func main() {
 	if *remove {
 		log.Printf("Starting attribute removal on: %s (Workers: %d)", root, *workers)
 	} else {
-		log.Printf("Starting hash tagger on: %s (Workers: %d)", root, *workers)
+		log.Printf("Starting forge hash on: %s (Workers: %d)", root, *workers)
 		log.Printf("Algorithms: %s", *algosFlag)
 	}
 
@@ -206,6 +218,8 @@ func main() {
 			atomic.LoadUint64(&errors),
 		)
 	}
+
+	return nil
 }
 
 func getSortedAlgoNames() []string {
@@ -404,12 +418,12 @@ func listXattrs(path string) ([]string, error) {
 	if sz <= 0 {
 		return []string{}, nil
 	}
-	
+
 	content := dest[:sz]
 	if content[len(content)-1] == 0 {
 		content = content[:len(content)-1]
 	}
-	
+
 	parts := strings.Split(string(content), "\x00")
 	return parts, nil
 }
