@@ -209,6 +209,7 @@ Notes:
 - Docs index: [`docs/README.md`](docs/README.md)
 - Dupes tool: [`docs/dupes_tool.md`](docs/dupes_tool.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
+- Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
 - Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tags tool: [`docs/tags_tool.md`](docs/tags_tool.md)
 - Tool rules: [`docs/tool_rules.md`](docs/tool_rules.md)
