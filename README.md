@@ -8,6 +8,7 @@ Current tools:
 - `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
 - `forge hashmap`: map external digests back to BLAKE3 identities.
 - `forge tags`: manage `user.xdg.tags` metadata on files/paths.
+- `forge blob`: deterministic encrypted blob storage with local cache + optional HTTP backend.
 
 ## Install
 
@@ -27,6 +28,7 @@ Top-level commands:
 - `forge snapshot`
 - `forge hashmap`
 - `forge tags`
+- `forge blob`
 - `forge completion`
 
 Output mode convention:
@@ -202,6 +204,56 @@ Hashmap flags:
 - `-digest`: digest value (lookup)
 - `-blake3`: BLAKE3 digest value (show)
 
+## Blob Tool
+
+Put/encrypt a blob from a local file:
+
+```bash
+forge blob put [flags] <path>
+```
+
+Get/decrypt a blob to a local file:
+
+```bash
+forge blob get [flags] -cid <cid> -out <path>
+# or
+forge blob get [flags] -oid <oid> -out <path>
+```
+
+List known local blob mappings:
+
+```bash
+forge blob ls [flags]
+```
+
+Run a minimal HTTP blob backend:
+
+```bash
+forge blob serve [flags]
+```
+
+Blob flags:
+- `-db`: blob metadata DB path (default from `${FORGE_BLOB_DB}` or `${XDG_DATA_HOME}/forge/blob.db`)
+- `-cache`: local encrypted blob cache dir (default from `${FORGE_BLOB_CACHE}` or `${XDG_CACHE_HOME}/forge/blobs`)
+- `-server`: optional blob backend base URL (for `put` upload and `get` cache-miss fetch)
+- `-backend`: backend name used in `remote_blob_inventory` rows (default `blob-http`)
+- `-bucket`: bucket/group label used in `remote_blob_inventory` rows (default `default`)
+- `-cid`: cleartext BLAKE3 content hash selector for `blob get`
+- `-oid`: encrypted object ID selector for `blob get`
+- `-out`: output plaintext path for `blob get` (required)
+- `-listen`: HTTP listen address for `blob serve` (default `127.0.0.1:8787`)
+- `-root`: encrypted object root dir for `blob serve`
+- `-limit`: max rows for `blob ls`
+- `-output`: output mode `auto|pretty|kv|json` (put/get/ls)
+- `-v`: verbose output (put/get)
+
+Blob notes:
+- Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
+- OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
+- Metadata is stored in separate tables:
+  - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
+  - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
+
 ## Tags Tool
 
 Manage `user.xdg.tags` directly:
@@ -231,6 +283,7 @@ Notes:
 - Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
 - Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tags tool: [`docs/tags_tool.md`](docs/tags_tool.md)
+- Blob tool: [`docs/blob_tool.md`](docs/blob_tool.md)
 - Tool rules: [`docs/tool_rules.md`](docs/tool_rules.md)
 - Output modes: [`docs/output_modes.md`](docs/output_modes.md)
 - Adding tools: [`docs/adding_tools.md`](docs/adding_tools.md)
