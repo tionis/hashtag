@@ -43,6 +43,11 @@ Serialization order:
    - tag count (`uint32`, big-endian)
    - each normalized tag string in ascending order
 
+`-basic-tree` mode:
+- keeps the same canonical serialization format
+- forces entry `mode=0` and `mod_time_ns=0` before hashing and persistence
+- clears entry tag lists before hashing and persistence
+
 All variable-length fields are encoded as:
 - `uint32(len(bytes))` + raw bytes.
 

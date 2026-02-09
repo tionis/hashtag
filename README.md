@@ -126,6 +126,7 @@ Snapshot flags:
 - `-output`: output mode `auto|pretty|kv|json` (create/history/diff/inspect/query, default `auto`)
 - `-v`: verbose output (create/remote create)
 - `-strict`: fail immediately on recoverable scan/hash warnings (create/remote create)
+- `-basic-tree`: zero entry `mode`/`mod_time_ns` and exclude entry tags from tree snapshots (create/remote create)
 - `-limit`: max rows (history)
 - `-from`: older snapshot time in unix ns (diff)
 - `-to`: newer snapshot time in unix ns (diff)
@@ -163,6 +164,7 @@ Remote snapshot notes:
 Snapshot metadata:
 - `user.xdg.tags` is ingested as normalized tags and stored as first-class relational data.
 - Tree hashes are content-addressed using BLAKE3 over canonical tree serialization (`forge.tree.v1`).
+- `-basic-tree` keeps canonical tree hashing but stores `mode=0`, `mod_time_ns=0`, and no entry tags for each entry, which helps cross-filesystem comparisons when metadata drifts during upload/sync.
 
 Snapshot database tables:
 - `trees`

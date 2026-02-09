@@ -81,6 +81,7 @@ type snapshotStats struct {
 type snapshotOptions struct {
 	verbose      bool
 	strict       bool
+	basicTree    bool
 	skipAbsPaths map[string]struct{}
 }
 
@@ -354,6 +355,7 @@ func runSnapshotCreateCommand(args []string) error {
 	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
 	verbose := fs.Bool("v", false, "Verbose output")
 	strict := fs.Bool("strict", false, "Fail immediately on scan warnings (permission or transient path errors)")
+	basicTree := fs.Bool("basic-tree", false, "Store tree entries without mode/modtime metadata (mode=0, mod_time_ns=0)")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -382,8 +384,9 @@ func runSnapshotCreateCommand(args []string) error {
 	}
 
 	opts := snapshotOptions{
-		verbose: *verbose,
-		strict:  *strict,
+		verbose:   *verbose,
+		strict:    *strict,
+		basicTree: *basicTree,
 		skipAbsPaths: map[string]struct{}{
 			absDBPath:          {},
 			absDBPath + "-wal": {},
@@ -475,6 +478,7 @@ func runSnapshotRemoteCommand(args []string) error {
 	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
 	verbose := fs.Bool("v", false, "Verbose output")
 	strict := fs.Bool("strict", false, "Fail immediately on recoverable remote listing/hash/metadata warnings")
+	basicTree := fs.Bool("basic-tree", false, "Store tree entries without mode/modtime metadata (mode=0, mod_time_ns=0)")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -516,8 +520,9 @@ func runSnapshotRemoteCommand(args []string) error {
 
 	stats := &snapshotStats{}
 	opts := snapshotOptions{
-		verbose: *verbose,
-		strict:  *strict,
+		verbose:   *verbose,
+		strict:    *strict,
+		basicTree: *basicTree,
 	}
 
 	targetHash, err := ingestRcloneRemote(tx, rcloneTarget, stats, opts)
@@ -1397,6 +1402,7 @@ func ingestDirectory(tx *sql.Tx, dirPath string, stats *snapshotStats, opts snap
 			stats.special++
 		}
 
+		applyBasicTreeEntryPolicy(&entry, opts)
 		entries = append(entries, entry)
 	}
 
@@ -1682,6 +1688,15 @@ func isUnderSkippedRemoteDir(path string, skippedDirs map[string]struct{}) bool 
 	return false
 }
 
+func applyBasicTreeEntryPolicy(entry *treeEntry, opts snapshotOptions) {
+	if !opts.basicTree {
+		return
+	}
+	entry.Mode = 0
+	entry.ModTimeUnix = 0
+	entry.Tags = nil
+}
+
 func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteTreeNode, stats *snapshotStats, opts snapshotOptions) (string, error) {
 	entries := make([]treeEntry, 0, len(node.dirs)+len(node.files))
 
@@ -1704,6 +1719,7 @@ func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteT
 			ModTimeUnix: 0,
 			Size:        0,
 		}
+		applyBasicTreeEntryPolicy(&treeEntryValue, opts)
 		entries = append(entries, treeEntryValue)
 	}
 
@@ -1731,6 +1747,7 @@ func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteT
 			ModTimeUnix: modTimeNS,
 			Size:        entry.Size,
 		}
+		applyBasicTreeEntryPolicy(&treeEntryValue, opts)
 		entries = append(entries, treeEntryValue)
 		stats.files++
 	}

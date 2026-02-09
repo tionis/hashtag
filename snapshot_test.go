@@ -580,6 +580,162 @@ func TestSnapshotRemoteCommandStrictModeFailsOnRecursiveListFallbackWarning(t *t
 	}
 }
 
+func TestSnapshotCommandBasicTreeIgnoresModeAndMtimeChanges(t *testing.T) {
+	root := t.TempDir()
+	filePath := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(filePath, []byte("stable-content"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := runSnapshotCommand([]string{"-db", dbPath, "-basic-tree", root}); err != nil {
+		t.Fatalf("first basic-tree snapshot: %v", err)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	changedTime := time.Unix(1700000600, 123456789).UTC()
+	if err := os.Chtimes(filePath, changedTime, changedTime); err != nil {
+		t.Fatalf("change file times: %v", err)
+	}
+	if err := os.Chmod(filePath, 0o600); err != nil {
+		t.Fatalf("chmod file: %v", err)
+	}
+
+	if err := runSnapshotCommand([]string{"-db", dbPath, "-basic-tree", root}); err != nil {
+		t.Fatalf("second basic-tree snapshot: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	pointers, err := listPointersForPath(db, root, 10)
+	if err != nil {
+		t.Fatalf("list pointers: %v", err)
+	}
+	if len(pointers) != 2 {
+		t.Fatalf("expected 2 pointers, got %d", len(pointers))
+	}
+	if pointers[0].TargetHash != pointers[1].TargetHash {
+		t.Fatalf("expected identical tree hash in basic-tree mode, got %q vs %q", pointers[0].TargetHash, pointers[1].TargetHash)
+	}
+
+	fromPointer, toPointer, err := resolvePointersForDiff(db, root, 0, 0)
+	if err != nil {
+		t.Fatalf("resolve pointers for diff: %v", err)
+	}
+	changes, err := diffPointers(db, fromPointer, toPointer)
+	if err != nil {
+		t.Fatalf("diff pointers: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected no diff changes in basic-tree mode, got %v", changes)
+	}
+
+	var mode int64
+	var modTimeNS int64
+	if err := db.QueryRow(
+		`SELECT mode, mod_time_ns
+		 FROM tree_entries
+		 WHERE tree_hash = ? AND name = ?`,
+		pointers[0].TargetHash,
+		"file.txt",
+	).Scan(&mode, &modTimeNS); err != nil {
+		t.Fatalf("query basic-tree entry metadata: %v", err)
+	}
+	if mode != 0 || modTimeNS != 0 {
+		t.Fatalf("expected mode=0 and mod_time_ns=0 for basic-tree entry, got mode=%d mod_time_ns=%d", mode, modTimeNS)
+	}
+}
+
+func TestSnapshotRemoteCommandBasicTreeZeroesModeAndMtime(t *testing.T) {
+	remoteTarget := "demo:bucket/basic-tree"
+	entries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "a.txt",
+			Name:    "a.txt",
+			Size:    5,
+			ModTime: time.Unix(1700000700, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"blake3": strings.Repeat("d", 64),
+			},
+		},
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal remote entries: %v", err)
+	}
+
+	origRun := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected remote target: got %q want %q", target, remoteTarget)
+		}
+		return payload, nil
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRun
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := runSnapshotCommand([]string{"remote", "-db", dbPath, "-basic-tree", remoteTarget}); err != nil {
+		t.Fatalf("run remote basic-tree snapshot: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var rootTreeHash string
+	if err := db.QueryRow("SELECT target_hash FROM pointers LIMIT 1").Scan(&rootTreeHash); err != nil {
+		t.Fatalf("query root tree hash: %v", err)
+	}
+
+	var mode int64
+	var modTimeNS int64
+	if err := db.QueryRow(
+		`SELECT mode, mod_time_ns
+		 FROM tree_entries
+		 WHERE tree_hash = ? AND name = ?`,
+		rootTreeHash,
+		"a.txt",
+	).Scan(&mode, &modTimeNS); err != nil {
+		t.Fatalf("query remote basic-tree entry metadata: %v", err)
+	}
+	if mode != 0 || modTimeNS != 0 {
+		t.Fatalf("expected mode=0 and mod_time_ns=0 for remote basic-tree entry, got mode=%d mod_time_ns=%d", mode, modTimeNS)
+	}
+}
+
+func TestApplyBasicTreeEntryPolicyClearsMetadataAndTags(t *testing.T) {
+	entry := treeEntry{
+		Name:        "file.txt",
+		Kind:        snapshotKindFile,
+		TargetHash:  strings.Repeat("a", 64),
+		Mode:        0o100644,
+		ModTimeUnix: 1700000000000000000,
+		Size:        123,
+		Tags:        []string{"alpha", "beta"},
+	}
+
+	applyBasicTreeEntryPolicy(&entry, snapshotOptions{basicTree: true})
+
+	if entry.Mode != 0 {
+		t.Fatalf("expected mode=0, got %d", entry.Mode)
+	}
+	if entry.ModTimeUnix != 0 {
+		t.Fatalf("expected mod_time_ns=0, got %d", entry.ModTimeUnix)
+	}
+	if len(entry.Tags) != 0 {
+		t.Fatalf("expected tags to be cleared, got %v", entry.Tags)
+	}
+}
+
 func TestSnapshotCommandReusesExistingTrees(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("content"), 0o644); err != nil {
