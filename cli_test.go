@@ -34,6 +34,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"tags"}); err != nil {
 		t.Fatalf("expected tags command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"blob"}); err != nil {
+		t.Fatalf("expected blob command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"snapshot", "inspect"}); err != nil {
 		t.Fatalf("expected snapshot inspect command to be registered: %v", err)
 	}
@@ -66,6 +69,18 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	}
 	if _, _, err := root.Find([]string{"tags", "clear"}); err != nil {
 		t.Fatalf("expected tags clear command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"blob", "put"}); err != nil {
+		t.Fatalf("expected blob put command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"blob", "get"}); err != nil {
+		t.Fatalf("expected blob get command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"blob", "ls"}); err != nil {
+		t.Fatalf("expected blob ls command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"blob", "serve"}); err != nil {
+		t.Fatalf("expected blob serve command to be registered: %v", err)
 	}
 }
 

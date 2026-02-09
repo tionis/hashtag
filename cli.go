@@ -83,6 +83,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSnapshotCommand())
 	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newTagsCommand())
+	root.AddCommand(newBlobCommand())
 	root.AddCommand(newCompletionCommand(root))
 	return root
 }
@@ -230,6 +231,52 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 			}
 		},
 	}
+}
+
+func newBlobCommand() *cobra.Command {
+	blobCmd := &cobra.Command{
+		Use:                "blob",
+		Short:              "Manage encrypted convergent blob storage and cache.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	blobCmd.AddCommand(&cobra.Command{
+		Use:                "put [options] <path>",
+		Short:              "Encrypt a file into a deterministic blob and cache it locally.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobPutCommand(args)
+		},
+	})
+	blobCmd.AddCommand(&cobra.Command{
+		Use:                "get [options]",
+		Short:              "Fetch and decrypt a blob by CID or OID.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobGetCommand(args)
+		},
+	})
+	blobCmd.AddCommand(&cobra.Command{
+		Use:                "ls [options]",
+		Short:              "List known blob mappings from the local metadata DB.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobListCommand(args)
+		},
+	})
+	blobCmd.AddCommand(&cobra.Command{
+		Use:                "serve [options]",
+		Short:              "Run a minimal HTTP blob backend for encrypted blobs.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobServeCommand(args)
+		},
+	})
+
+	return blobCmd
 }
 
 func newTagsCommand() *cobra.Command {
