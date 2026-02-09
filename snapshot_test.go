@@ -366,6 +366,220 @@ func TestSnapshotRemoteCommandFailsWhenContentHashingFails(t *testing.T) {
 	}
 }
 
+func TestSnapshotRemoteCommandFallsBackToDirectoryWalk(t *testing.T) {
+	remoteTarget := "demo:bucket/fallback"
+	rootEntries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "a.txt",
+			Name:    "a.txt",
+			Size:    5,
+			ModTime: time.Unix(1700000400, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"blake3": strings.Repeat("a", 64),
+			},
+		},
+		{
+			Path:    "sub",
+			Name:    "sub",
+			Size:    -1,
+			ModTime: time.Unix(1700000401, 0).UTC(),
+			IsDir:   true,
+		},
+	}
+	subEntries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "b.txt",
+			Name:    "b.txt",
+			Size:    6,
+			ModTime: time.Unix(1700000402, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"blake3": strings.Repeat("b", 64),
+			},
+		},
+	}
+
+	rootPayload, err := json.Marshal(rootEntries)
+	if err != nil {
+		t.Fatalf("marshal root entries: %v", err)
+	}
+	subPayload, err := json.Marshal(subEntries)
+	if err != nil {
+		t.Fatalf("marshal sub entries: %v", err)
+	}
+
+	origRunRecursive := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected recursive target: got %q want %q", target, remoteTarget)
+		}
+		return nil, fmt.Errorf("simulated recursive list failure")
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRunRecursive
+	}()
+
+	origRunDir := snapshotRunRcloneLSJSONDir
+	snapshotRunRcloneLSJSONDir = func(target string) ([]byte, error) {
+		switch target {
+		case remoteTarget:
+			return rootPayload, nil
+		case joinRcloneRemoteObject(remoteTarget, "sub"):
+			return subPayload, nil
+		default:
+			t.Fatalf("unexpected directory listing target: %q", target)
+			return nil, nil
+		}
+	}
+	defer func() {
+		snapshotRunRcloneLSJSONDir = origRunDir
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err = runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget})
+	if err == nil {
+		t.Fatal("expected partial warning exit when directory-walk fallback is used")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodePartialWarnings {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodePartialWarnings, code, err)
+	}
+
+	db, openErr := sql.Open("sqlite", dbPath)
+	if openErr != nil {
+		t.Fatalf("open sqlite: %v", openErr)
+	}
+	defer db.Close()
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 1 {
+		t.Fatalf("expected pointer commit after fallback, got %d", got)
+	}
+
+	var rootTreeHash string
+	if err := db.QueryRow("SELECT target_hash FROM pointers LIMIT 1").Scan(&rootTreeHash); err != nil {
+		t.Fatalf("query root tree hash: %v", err)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ?", rootTreeHash); got != 2 {
+		t.Fatalf("expected root tree to include file and subdir, got %d entries", got)
+	}
+}
+
+func TestSnapshotRemoteCommandWalkSkipsFailedSubtrees(t *testing.T) {
+	remoteTarget := "demo:bucket/subtree-fail"
+	rootEntries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "keep.txt",
+			Name:    "keep.txt",
+			Size:    5,
+			ModTime: time.Unix(1700000500, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"blake3": strings.Repeat("c", 64),
+			},
+		},
+		{
+			Path:    "broken",
+			Name:    "broken",
+			Size:    -1,
+			ModTime: time.Unix(1700000501, 0).UTC(),
+			IsDir:   true,
+		},
+	}
+	rootPayload, err := json.Marshal(rootEntries)
+	if err != nil {
+		t.Fatalf("marshal root entries: %v", err)
+	}
+
+	origRunRecursive := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected recursive target: got %q want %q", target, remoteTarget)
+		}
+		return nil, fmt.Errorf("simulated recursive list failure")
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRunRecursive
+	}()
+
+	origRunDir := snapshotRunRcloneLSJSONDir
+	snapshotRunRcloneLSJSONDir = func(target string) ([]byte, error) {
+		switch target {
+		case remoteTarget:
+			return rootPayload, nil
+		case joinRcloneRemoteObject(remoteTarget, "broken"):
+			return nil, fmt.Errorf("simulated subtree list failure")
+		default:
+			t.Fatalf("unexpected directory listing target: %q", target)
+			return nil, nil
+		}
+	}
+	defer func() {
+		snapshotRunRcloneLSJSONDir = origRunDir
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err = runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget})
+	if err == nil {
+		t.Fatal("expected partial warning exit when subtree listing fails")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodePartialWarnings {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodePartialWarnings, code, err)
+	}
+
+	db, openErr := sql.Open("sqlite", dbPath)
+	if openErr != nil {
+		t.Fatalf("open sqlite: %v", openErr)
+	}
+	defer db.Close()
+
+	var rootTreeHash string
+	if err := db.QueryRow("SELECT target_hash FROM pointers LIMIT 1").Scan(&rootTreeHash); err != nil {
+		t.Fatalf("query root tree hash: %v", err)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ?", rootTreeHash); got != 1 {
+		t.Fatalf("expected failed subtree to be omitted from root tree, got %d entries", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'keep.txt'", rootTreeHash); got != 1 {
+		t.Fatalf("expected keep.txt in root tree, got %d", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM tree_entries WHERE tree_hash = ? AND name = 'broken'", rootTreeHash); got != 0 {
+		t.Fatalf("expected broken subtree to be omitted, got %d", got)
+	}
+}
+
+func TestSnapshotRemoteCommandStrictModeFailsOnRecursiveListFallbackWarning(t *testing.T) {
+	remoteTarget := "demo:bucket/strict-fallback"
+
+	origRunRecursive := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected recursive target: got %q want %q", target, remoteTarget)
+		}
+		return nil, fmt.Errorf("simulated recursive list failure")
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRunRecursive
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err := runSnapshotCommand([]string{"remote", "-db", dbPath, "-strict", remoteTarget})
+	if err == nil {
+		t.Fatal("expected strict mode to fail on recursive list fallback warning")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodeFailure {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodeFailure, code, err)
+	}
+
+	db, openErr := sql.Open("sqlite", dbPath)
+	if openErr != nil {
+		t.Fatalf("open sqlite: %v", openErr)
+	}
+	defer db.Close()
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 0 {
+		t.Fatalf("expected no pointer commit in strict mode, got %d", got)
+	}
+}
+
 func TestSnapshotCommandReusesExistingTrees(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("content"), 0o644); err != nil {

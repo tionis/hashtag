@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
@@ -47,6 +48,7 @@ var snapshotLstat = os.Lstat
 var snapshotReadDir = os.ReadDir
 var snapshotHashRegularFile = hashRegularFileForSnapshot
 var snapshotRunRcloneLSJSON = runRcloneLSJSON
+var snapshotRunRcloneLSJSONDir = runRcloneLSJSONDir
 var snapshotHashRemoteObjectBlake3 = hashRemoteObjectBlake3
 
 var errSnapshotFileChanged = stderrors.New("file changed while hashing")
@@ -472,7 +474,7 @@ func runSnapshotRemoteCommand(args []string) error {
 
 	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
 	verbose := fs.Bool("v", false, "Verbose output")
-	strict := fs.Bool("strict", false, "Fail immediately on recoverable remote hash/metadata warnings")
+	strict := fs.Bool("strict", false, "Fail immediately on recoverable remote listing/hash/metadata warnings")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -1453,16 +1455,37 @@ func canIgnoreSnapshotPathError(err error) bool {
 }
 
 func runRcloneLSJSON(remoteTarget string) ([]byte, error) {
-	cmd := exec.Command("rclone", "lsjson", remoteTarget, "-R", "--hash", "--metadata")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
+	return runRcloneLSJSONMode(remoteTarget, true)
+}
+
+func runRcloneLSJSONDir(remoteTarget string) ([]byte, error) {
+	return runRcloneLSJSONMode(remoteTarget, false)
+}
+
+func runRcloneLSJSONMode(remoteTarget string, recursive bool) ([]byte, error) {
+	args := []string{"lsjson", remoteTarget}
+	if recursive {
+		args = append(args, "-R")
+	}
+	args = append(args, "--hash", "--metadata")
+
+	cmd := exec.Command("rclone", args...)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(stdout.String())
+		}
 		if msg == "" {
 			return nil, fmt.Errorf("run rclone lsjson for %q: %w", remoteTarget, err)
 		}
 		return nil, fmt.Errorf("run rclone lsjson for %q: %w: %s", remoteTarget, err, msg)
 	}
-	return out, nil
+
+	return stdout.Bytes(), nil
 }
 
 func hashRemoteObjectBlake3(remoteObjectTarget string) (string, error) {
@@ -1493,14 +1516,9 @@ func hashRemoteObjectBlake3(remoteObjectTarget string) (string, error) {
 }
 
 func ingestRcloneRemote(tx *sql.Tx, remoteTarget string, stats *snapshotStats, opts snapshotOptions) (string, error) {
-	out, err := snapshotRunRcloneLSJSON(remoteTarget)
+	entries, err := listRcloneRemoteEntries(remoteTarget, stats, opts)
 	if err != nil {
 		return "", err
-	}
-
-	entries := make([]snapshotRemoteLSJSONEntry, 0)
-	if err := json.Unmarshal(out, &entries); err != nil {
-		return "", fmt.Errorf("decode rclone lsjson output for %q: %w", remoteTarget, err)
 	}
 
 	root := newSnapshotRemoteTreeNode()
@@ -1538,6 +1556,132 @@ func ingestRcloneRemote(tx *sql.Tx, remoteTarget string, stats *snapshotStats, o
 	return ingestRcloneRemoteTree(tx, snapshotRemotePath(remoteTarget), root, stats, opts)
 }
 
+func listRcloneRemoteEntries(remoteTarget string, stats *snapshotStats, opts snapshotOptions) ([]snapshotRemoteLSJSONEntry, error) {
+	out, err := snapshotRunRcloneLSJSON(remoteTarget)
+	if err == nil {
+		entries, decodeErr := decodeRcloneLSJSONOutput(remoteTarget, out)
+		if decodeErr == nil {
+			return entries, nil
+		}
+		err = decodeErr
+	}
+
+	if warningErr := recordSnapshotWarning(
+		stats,
+		opts,
+		fmt.Sprintf("recursive remote listing for %q failed; falling back to directory walk: %v", remoteTarget, err),
+	); warningErr != nil {
+		return nil, warningErr
+	}
+
+	return listRcloneRemoteEntriesByWalk(remoteTarget, stats, opts)
+}
+
+func listRcloneRemoteEntriesByWalk(remoteTarget string, stats *snapshotStats, opts snapshotOptions) ([]snapshotRemoteLSJSONEntry, error) {
+	queue := []string{""}
+	queued := map[string]struct{}{"": {}}
+	skippedDirs := make(map[string]struct{})
+	entries := make([]snapshotRemoteLSJSONEntry, 0)
+
+	for len(queue) > 0 {
+		relDir := queue[0]
+		queue = queue[1:]
+
+		listTarget := remoteTarget
+		if relDir != "" {
+			listTarget = joinRcloneRemoteObject(remoteTarget, relDir)
+		}
+
+		out, err := snapshotRunRcloneLSJSONDir(listTarget)
+		if err != nil {
+			if relDir == "" {
+				return nil, err
+			}
+			if warningErr := recordSnapshotWarning(stats, opts, fmt.Sprintf("list remote directory %q: %v", listTarget, err)); warningErr != nil {
+				return nil, warningErr
+			}
+			skippedDirs[relDir] = struct{}{}
+			continue
+		}
+
+		listedEntries, err := decodeRcloneLSJSONOutput(listTarget, out)
+		if err != nil {
+			if relDir == "" {
+				return nil, err
+			}
+			if warningErr := recordSnapshotWarning(stats, opts, fmt.Sprintf("decode remote directory listing %q: %v", listTarget, err)); warningErr != nil {
+				return nil, warningErr
+			}
+			skippedDirs[relDir] = struct{}{}
+			continue
+		}
+
+		for _, entry := range listedEntries {
+			relPath := strings.TrimSpace(strings.Trim(entry.Path, "/"))
+			if relPath == "" {
+				relPath = strings.TrimSpace(strings.Trim(entry.Name, "/"))
+			}
+			childParts := splitRemotePath(relPath)
+			if len(childParts) == 0 {
+				continue
+			}
+
+			fullParts := make([]string, 0, len(childParts)+4)
+			if relDir != "" {
+				fullParts = append(fullParts, splitRemotePath(relDir)...)
+			}
+			fullParts = append(fullParts, childParts...)
+
+			fullRelPath := strings.Join(fullParts, "/")
+			entry.Path = fullRelPath
+			entry.Name = fullParts[len(fullParts)-1]
+			entries = append(entries, entry)
+
+			if entry.IsDir {
+				if _, exists := queued[fullRelPath]; !exists {
+					queued[fullRelPath] = struct{}{}
+					queue = append(queue, fullRelPath)
+				}
+			}
+		}
+	}
+
+	if len(skippedDirs) == 0 {
+		return entries, nil
+	}
+
+	filtered := make([]snapshotRemoteLSJSONEntry, 0, len(entries))
+	for _, entry := range entries {
+		if isUnderSkippedRemoteDir(entry.Path, skippedDirs) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered, nil
+}
+
+func decodeRcloneLSJSONOutput(remoteTarget string, out []byte) ([]snapshotRemoteLSJSONEntry, error) {
+	entries := make([]snapshotRemoteLSJSONEntry, 0)
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return nil, fmt.Errorf("decode rclone lsjson output for %q: %w", remoteTarget, err)
+	}
+	return entries, nil
+}
+
+func isUnderSkippedRemoteDir(path string, skippedDirs map[string]struct{}) bool {
+	normalized := strings.Trim(strings.TrimSpace(path), "/")
+	if normalized == "" {
+		return false
+	}
+
+	for skippedDir := range skippedDirs {
+		if normalized == skippedDir || strings.HasPrefix(normalized, skippedDir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteTreeNode, stats *snapshotStats, opts snapshotOptions) (string, error) {
 	entries := make([]treeEntry, 0, len(node.dirs)+len(node.files))
 
@@ -1552,14 +1696,15 @@ func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteT
 		if err != nil {
 			return "", err
 		}
-		entries = append(entries, treeEntry{
+		treeEntryValue := treeEntry{
 			Name:        name,
 			Kind:        snapshotKindTree,
 			TargetHash:  childHash,
 			Mode:        snapshotRemoteDirMode,
 			ModTimeUnix: 0,
 			Size:        0,
-		})
+		}
+		entries = append(entries, treeEntryValue)
 	}
 
 	fileNames := make([]string, 0, len(node.files))
@@ -1578,14 +1723,15 @@ func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteT
 		if !entry.ModTime.IsZero() {
 			modTimeNS = entry.ModTime.UnixNano()
 		}
-		entries = append(entries, treeEntry{
+		treeEntryValue := treeEntry{
 			Name:        name,
 			Kind:        snapshotKindFile,
 			TargetHash:  fileHash,
 			Mode:        snapshotRemoteFileMode,
 			ModTimeUnix: modTimeNS,
 			Size:        entry.Size,
-		})
+		}
+		entries = append(entries, treeEntryValue)
 		stats.files++
 	}
 

@@ -151,6 +151,9 @@ Snapshot create error behavior:
 
 Remote snapshot notes:
 - `forge snapshot remote` uses `rclone lsjson -R --hash --metadata` to enumerate remote files.
+- Forge captures `rclone` `stdout` and `stderr` separately to keep listing JSON parse-safe.
+- If recursive listing fails, Forge falls back to directory-by-directory listing.
+- If some subtrees fail during fallback listing, Forge skips those subtrees with warnings (or fails in `-strict`).
 - Remote xattrs are not required.
 - Forge keeps a local `remote_hash_cache` table in the snapshot DB for remote hash reuse.
 - If remote BLAKE3 is unavailable and no mapping exists, Forge computes BLAKE3 by streaming object content.

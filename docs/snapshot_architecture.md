@@ -12,6 +12,9 @@ The snapshot system is metadata-only:
 CLI subcommands:
 - `forge snapshot create`
 - `forge snapshot remote`
+  - Primary listing path: `rclone lsjson -R --hash --metadata`
+  - On recursive listing failure: directory-by-directory `lsjson` fallback with warning accounting
+  - Subtree listing failures in fallback mode are skipped with warnings (strict mode fails)
 - `forge snapshot history`
 - `forge snapshot diff`
 - `forge snapshot inspect`
