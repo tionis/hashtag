@@ -160,6 +160,14 @@ func newSnapshotCommand() *cobra.Command {
 			return runSnapshotQueryCommand(args)
 		},
 	})
+	snapshotCmd.AddCommand(&cobra.Command{
+		Use:                "remote [options] <remote:path>",
+		Short:              "Create a snapshot pointer for an rclone remote target.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapshotRemoteCommand(args)
+		},
+	})
 
 	return snapshotCmd
 }

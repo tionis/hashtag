@@ -91,6 +91,12 @@ forge snapshot [flags] [path]
 forge snapshot create [flags] [path]
 ```
 
+Create snapshot from an rclone remote:
+
+```bash
+forge snapshot remote [flags] <remote:path>
+```
+
 History:
 
 ```bash
@@ -118,8 +124,8 @@ forge snapshot query -tree <tree_hash> -tags tag1,tag2 [flags]
 Snapshot flags:
 - `-db`: snapshot DB path (default from `${FORGE_SNAPSHOT_DB}` or `${XDG_DATA_HOME}/forge/snapshot.db`, fallback `~/.local/share/forge/snapshot.db`)
 - `-output`: output mode `auto|pretty|kv|json` (create/history/diff/inspect/query, default `auto`)
-- `-v`: verbose output (create)
-- `-strict`: fail immediately on permission/transient scan errors (create)
+- `-v`: verbose output (create/remote create)
+- `-strict`: fail immediately on recoverable scan/hash warnings (create/remote create)
 - `-limit`: max rows (history)
 - `-from`: older snapshot time in unix ns (diff)
 - `-to`: newer snapshot time in unix ns (diff)
@@ -142,6 +148,14 @@ Snapshot create error behavior:
 - Default: permission-denied, transient missing-path scan errors, and file-changed-during-hash races are skipped with warnings; snapshot is still committed.
 - Default warning exit code: `2` (partial success).
 - Strict mode (`-strict`): these warnings become hard errors and snapshot creation fails with exit code `1`.
+
+Remote snapshot notes:
+- `forge snapshot remote` uses `rclone lsjson -R --hash --metadata` to enumerate remote files.
+- Remote xattrs are not required.
+- Forge keeps a local `remote_hash_cache` table in the snapshot DB for remote hash reuse.
+- If remote BLAKE3 is unavailable and no mapping exists, Forge computes BLAKE3 by streaming object content.
+- If content hashing fails, snapshot creation fails (no metadata fallback identity is used).
+- Remote pointers are stored as `rclone:<remote:path>` and can be passed to `snapshot history`/`snapshot diff`.
 
 Snapshot metadata:
 - `user.xdg.tags` is ingested as normalized tags and stored as first-class relational data.

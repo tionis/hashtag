@@ -11,6 +11,7 @@ The snapshot system is metadata-only:
 
 CLI subcommands:
 - `forge snapshot create`
+- `forge snapshot remote`
 - `forge snapshot history`
 - `forge snapshot diff`
 - `forge snapshot inspect`
@@ -74,6 +75,8 @@ Core tables:
 - `pointers(id PK, path, snapshot_time_ns, target_kind, target_hash, hash_algo)`
 - `hash_mappings(blake3, algo, digest)`
   - PK: `(blake3, algo)`
+- `remote_hash_cache(remote_path, object_path, size, mod_time_ns, etag, hash_algo, hash_digest, source, confidence, updated_at_ns)`
+  - PK: `(remote_path, object_path, hash_algo)`
 
 Indexes:
 - `pointers(path, snapshot_time_ns DESC)`
@@ -81,6 +84,7 @@ Indexes:
 - `tree_entry_tags(tag_id, tree_hash)`
 - `tree_entry_tags(tree_hash, tag_id)`
 - `hash_mappings(algo, digest)`
+- `remote_hash_cache(remote_path, object_path)`
 
 ## Safety Pragmas
 

@@ -60,6 +60,312 @@ func TestSnapshotCommandCreatesTreesAndPointer(t *testing.T) {
 	}
 }
 
+func TestSnapshotRemoteCommandCreatesTreesAndPointer(t *testing.T) {
+	remoteTarget := "demo:bucket/prefix"
+	entries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "a.txt",
+			Name:    "a.txt",
+			Size:    5,
+			ModTime: time.Unix(1700000000, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"blake3": strings.Repeat("a", 64),
+				"sha256": strings.Repeat("b", 64),
+			},
+		},
+		{
+			Path:    "sub/b.txt",
+			Name:    "b.txt",
+			Size:    6,
+			ModTime: time.Unix(1700000100, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"blake3": strings.Repeat("c", 64),
+			},
+		},
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal remote entries: %v", err)
+	}
+
+	origRun := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected remote target: got %q want %q", target, remoteTarget)
+		}
+		return payload, nil
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRun
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget}); err != nil {
+		t.Fatalf("run remote snapshot command: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 1 {
+		t.Fatalf("expected 1 pointer, got %d", got)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM trees"); got != 2 {
+		t.Fatalf("expected 2 trees (root + subdir), got %d", got)
+	}
+
+	var path string
+	var kind string
+	if err := db.QueryRow("SELECT path, target_kind FROM pointers LIMIT 1").Scan(&path, &kind); err != nil {
+		t.Fatalf("query pointer row: %v", err)
+	}
+	if want := snapshotRemotePath(remoteTarget); path != want {
+		t.Fatalf("expected remote pointer path %q, got %q", want, path)
+	}
+	if kind != snapshotKindTree {
+		t.Fatalf("expected target kind %q, got %q", snapshotKindTree, kind)
+	}
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM remote_hash_cache"); got < 2 {
+		t.Fatalf("expected remote hash cache rows to be populated, got %d", got)
+	}
+
+	if err := runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget}); err != nil {
+		t.Fatalf("run second remote snapshot command: %v", err)
+	}
+	if err := runSnapshotCommand([]string{"history", "-db", dbPath, snapshotRemotePath(remoteTarget)}); err != nil {
+		t.Fatalf("snapshot history for remote path: %v", err)
+	}
+	if err := runSnapshotCommand([]string{"diff", "-db", dbPath, snapshotRemotePath(remoteTarget)}); err != nil {
+		t.Fatalf("snapshot diff for remote path: %v", err)
+	}
+}
+
+func TestSnapshotRemoteCommandComputesBlake3WithoutRemoteHashes(t *testing.T) {
+	remoteTarget := "demo:bucket/nohash"
+	entries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "a.txt",
+			Name:    "a.txt",
+			Size:    9,
+			ModTime: time.Unix(1700000200, 0).UTC(),
+			IsDir:   false,
+			Hashes:  map[string]string{},
+		},
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal remote entries: %v", err)
+	}
+
+	origRun := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected remote target: got %q want %q", target, remoteTarget)
+		}
+		return payload, nil
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRun
+	}()
+
+	origHashRemote := snapshotHashRemoteObjectBlake3
+	snapshotHashRemoteObjectBlake3 = func(objectTarget string) (string, error) {
+		if objectTarget != "demo:bucket/nohash/a.txt" {
+			t.Fatalf("unexpected object target for hashing: %q", objectTarget)
+		}
+		return strings.Repeat("e", 64), nil
+	}
+	defer func() {
+		snapshotHashRemoteObjectBlake3 = origHashRemote
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget}); err != nil {
+		t.Fatalf("expected success when computing blake3 for no-hash object, got: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 1 {
+		t.Fatalf("expected pointer to be committed, got %d", got)
+	}
+
+	var source string
+	var confidence string
+	var digest string
+	if err := db.QueryRow(
+		`SELECT source, confidence, hash_digest
+		 FROM remote_hash_cache
+		 WHERE remote_path = ? AND object_path = ? AND hash_algo = ?`,
+		snapshotRemotePath(remoteTarget),
+		"a.txt",
+		snapshotHashAlgo,
+	).Scan(&source, &confidence, &digest); err != nil {
+		t.Fatalf("query computed cache row: %v", err)
+	}
+	if source != "computed" {
+		t.Fatalf("expected source=computed, got %q", source)
+	}
+	if confidence != "strong" {
+		t.Fatalf("expected confidence=strong, got %q", confidence)
+	}
+	if digest != strings.Repeat("e", 64) {
+		t.Fatalf("expected computed digest to be stored, got %q", digest)
+	}
+}
+
+func TestSnapshotRemoteCommandComputesBlake3WhenNoMappingExists(t *testing.T) {
+	remoteTarget := "demo:bucket/hashset"
+	entries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "a.txt",
+			Name:    "a.txt",
+			Size:    9,
+			ModTime: time.Unix(1700000250, 0).UTC(),
+			IsDir:   false,
+			Hashes: map[string]string{
+				"sha256": strings.Repeat("d", 64),
+			},
+		},
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal remote entries: %v", err)
+	}
+
+	origRun := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected remote target: got %q want %q", target, remoteTarget)
+		}
+		return payload, nil
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRun
+	}()
+
+	origHashRemote := snapshotHashRemoteObjectBlake3
+	snapshotHashRemoteObjectBlake3 = func(objectTarget string) (string, error) {
+		if objectTarget != "demo:bucket/hashset/a.txt" {
+			t.Fatalf("unexpected object target for hashing: %q", objectTarget)
+		}
+		return strings.Repeat("f", 64), nil
+	}
+	defer func() {
+		snapshotHashRemoteObjectBlake3 = origHashRemote
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget}); err != nil {
+		t.Fatalf("expected success with computed blake3 fallback, got: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+
+	var source string
+	var confidence string
+	var digest string
+	if err := db.QueryRow(
+		`SELECT source, confidence, hash_digest
+		 FROM remote_hash_cache
+		 WHERE remote_path = ? AND object_path = ? AND hash_algo = ?`,
+		snapshotRemotePath(remoteTarget),
+		"a.txt",
+		snapshotHashAlgo,
+	).Scan(&source, &confidence, &digest); err != nil {
+		t.Fatalf("query remote hash cache source/confidence: %v", err)
+	}
+	if source != "computed" {
+		t.Fatalf("expected source=computed, got %q", source)
+	}
+	if confidence != "strong" {
+		t.Fatalf("expected confidence=strong, got %q", confidence)
+	}
+	if digest != strings.Repeat("f", 64) {
+		t.Fatalf("expected computed digest to be stored, got %q", digest)
+	}
+
+	var mappedBlake3 string
+	if err := db.QueryRow(
+		`SELECT blake3 FROM hash_mappings WHERE algo = ? AND digest = ?`,
+		"sha256",
+		strings.Repeat("d", 64),
+	).Scan(&mappedBlake3); err != nil {
+		t.Fatalf("expected hash mapping to be inserted: %v", err)
+	}
+	if mappedBlake3 != strings.Repeat("f", 64) {
+		t.Fatalf("expected mapping to computed blake3, got %q", mappedBlake3)
+	}
+}
+
+func TestSnapshotRemoteCommandFailsWhenContentHashingFails(t *testing.T) {
+	remoteTarget := "demo:bucket/hashfail"
+	entries := []snapshotRemoteLSJSONEntry{
+		{
+			Path:    "a.txt",
+			Name:    "a.txt",
+			Size:    9,
+			ModTime: time.Unix(1700000300, 0).UTC(),
+			IsDir:   false,
+			Hashes:  map[string]string{},
+		},
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal remote entries: %v", err)
+	}
+
+	origRun := snapshotRunRcloneLSJSON
+	snapshotRunRcloneLSJSON = func(target string) ([]byte, error) {
+		if target != remoteTarget {
+			t.Fatalf("unexpected remote target: got %q want %q", target, remoteTarget)
+		}
+		return payload, nil
+	}
+	defer func() {
+		snapshotRunRcloneLSJSON = origRun
+	}()
+
+	origHashRemote := snapshotHashRemoteObjectBlake3
+	snapshotHashRemoteObjectBlake3 = func(objectTarget string) (string, error) {
+		return "", fmt.Errorf("simulated remote read failure for %s", objectTarget)
+	}
+	defer func() {
+		snapshotHashRemoteObjectBlake3 = origHashRemote
+	}()
+
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	err = runSnapshotCommand([]string{"remote", "-db", dbPath, remoteTarget})
+	if err == nil {
+		t.Fatal("expected failure when remote content hashing fails")
+	}
+	if code := resolveCLIExitCode(err); code != exitCodeFailure {
+		t.Fatalf("expected exit code %d, got %d (err=%v)", exitCodeFailure, code, err)
+	}
+
+	db, openErr := sql.Open("sqlite", dbPath)
+	if openErr != nil {
+		t.Fatalf("open sqlite: %v", openErr)
+	}
+	defer db.Close()
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM pointers"); got != 0 {
+		t.Fatalf("expected no pointer commit in strict mode, got %d", got)
+	}
+}
+
 func TestSnapshotCommandReusesExistingTrees(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "file.txt"), []byte("content"), 0o644); err != nil {

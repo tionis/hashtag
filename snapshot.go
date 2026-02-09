@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	stderrors "errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -35,13 +37,35 @@ const (
 	snapshotXDGTagsKey = "user.xdg.tags"
 
 	snapshotWarningSampleLimit = 5
+
+	snapshotRemotePathPrefix = "rclone:"
+	snapshotRemoteFileMode   = uint32(0o100644)
+	snapshotRemoteDirMode    = uint32(0o040755)
 )
 
 var snapshotLstat = os.Lstat
 var snapshotReadDir = os.ReadDir
 var snapshotHashRegularFile = hashRegularFileForSnapshot
+var snapshotRunRcloneLSJSON = runRcloneLSJSON
+var snapshotHashRemoteObjectBlake3 = hashRemoteObjectBlake3
 
 var errSnapshotFileChanged = stderrors.New("file changed while hashing")
+
+type snapshotRemoteLSJSONEntry struct {
+	Path     string            `json:"Path"`
+	Name     string            `json:"Name"`
+	Size     int64             `json:"Size"`
+	ModTime  time.Time         `json:"ModTime"`
+	IsDir    bool              `json:"IsDir"`
+	Hashes   map[string]string `json:"Hashes"`
+	ID       string            `json:"ID"`
+	Metadata map[string]string `json:"Metadata"`
+}
+
+type snapshotRemoteTreeNode struct {
+	dirs  map[string]*snapshotRemoteTreeNode
+	files map[string]snapshotRemoteLSJSONEntry
+}
 
 type snapshotStats struct {
 	trees          int
@@ -293,6 +317,8 @@ func renderSnapshotDiffOutput(mode string, output snapshotDiffOutput) error {
 func runSnapshotCommand(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "remote":
+			return runSnapshotRemoteCommand(args[1:])
 		case "history":
 			return runSnapshotHistoryCommand(args[1:])
 		case "diff":
@@ -313,7 +339,11 @@ func runSnapshotCreateCommand(args []string) error {
 	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage:\n  %s snapshot [options] [path]\n  %s snapshot history [options] [path]\n  %s snapshot diff [options] [path]\n  %s snapshot inspect [options]\n  %s snapshot query [options]\n\n", os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
+		fmt.Fprintf(
+			fs.Output(),
+			"Usage:\n  %s snapshot [options] [path]\n  %s snapshot history [options] [path]\n  %s snapshot diff [options] [path]\n  %s snapshot inspect [options]\n  %s snapshot query [options]\n  %s snapshot remote [options] <remote:path>\n\n",
+			os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0],
+		)
 		fmt.Fprintln(fs.Output(), "Create a content-addressed filesystem snapshot and store a time/location pointer.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
@@ -392,7 +422,7 @@ func runSnapshotCreateCommand(args []string) error {
 			return err
 		}
 	case info.Mode().IsRegular():
-		targetHash, err = hashRegularFileForSnapshot(absTargetPath, info, opts.verbose)
+		targetHash, err = snapshotHashRegularFile(absTargetPath, info, opts.verbose)
 		if err != nil {
 			return err
 		}
@@ -416,15 +446,123 @@ func runSnapshotCreateCommand(args []string) error {
 		return fmt.Errorf("commit snapshot transaction: %w", err)
 	}
 
-	if err := renderSnapshotCreateOutput(
+	return finalizeSnapshotCreateResult(
 		resolvedOutputMode,
+		absDBPath,
+		absTargetPath,
+		targetKind,
+		targetHash,
+		snapshotTime,
+		stats,
+		opts,
+	)
+}
+
+func runSnapshotRemoteCommand(args []string) error {
+	defaultDB := defaultSnapshotDBPath()
+
+	fs := flag.NewFlagSet("snapshot remote", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s snapshot remote [options] <remote:path>\n\n", os.Args[0])
+		fmt.Fprintln(fs.Output(), "Create a content-addressed snapshot pointer for an rclone remote target.")
+		fmt.Fprintln(fs.Output(), "\nOptions:")
+		fs.PrintDefaults()
+	}
+
+	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
+	verbose := fs.Bool("v", false, "Verbose output")
+	strict := fs.Bool("strict", false, "Fail immediately on recoverable remote hash/metadata warnings")
+	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+	resolvedOutputMode, err := resolvePrettyKVJSONOutputMode(*outputMode)
+	if err != nil {
+		return err
+	}
+
+	remoteTarget := strings.TrimSpace(fs.Arg(0))
+	if remoteTarget == "" {
+		return fmt.Errorf("remote target is required (expected <remote:path>)")
+	}
+	rcloneTarget := strings.TrimPrefix(remoteTarget, snapshotRemotePathPrefix)
+	if rcloneTarget == "" {
+		return fmt.Errorf("remote target is required (expected <remote:path>)")
+	}
+
+	absDBPath, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve db path: %w", err)
+	}
+
+	db, err := openSnapshotDB(absDBPath)
+	if err != nil {
+		return fmt.Errorf("open snapshot db: %w", err)
+	}
+	defer db.Close()
+
+	snapshotTime := time.Now().UTC().UnixNano()
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("start db transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	stats := &snapshotStats{}
+	opts := snapshotOptions{
+		verbose: *verbose,
+		strict:  *strict,
+	}
+
+	targetHash, err := ingestRcloneRemote(tx, rcloneTarget, stats, opts)
+	if err != nil {
+		return err
+	}
+
+	pointerPath := snapshotRemotePath(rcloneTarget)
+	if err := insertPointer(tx, pointerPath, snapshotTime, snapshotKindTree, targetHash); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit snapshot transaction: %w", err)
+	}
+
+	return finalizeSnapshotCreateResult(
+		resolvedOutputMode,
+		absDBPath,
+		pointerPath,
+		snapshotKindTree,
+		targetHash,
+		snapshotTime,
+		stats,
+		opts,
+	)
+}
+
+func finalizeSnapshotCreateResult(
+	outputMode string,
+	dbPath string,
+	targetPath string,
+	targetKind string,
+	targetHash string,
+	snapshotTime int64,
+	stats *snapshotStats,
+	opts snapshotOptions,
+) error {
+	if err := renderSnapshotCreateOutput(
+		outputMode,
 		snapshotCreateOutput{
 			SnapshotTimeNS:  snapshotTime,
 			SnapshotTimeUTC: time.Unix(0, snapshotTime).UTC().Format(time.RFC3339Nano),
-			Path:            absTargetPath,
+			Path:            targetPath,
 			TargetKind:      targetKind,
 			TargetHash:      targetHash,
-			DB:              absDBPath,
+			DB:              dbPath,
 			Stats: snapshotCreateStatsOutput{
 				Trees:    stats.trees,
 				Files:    stats.files,
@@ -441,13 +579,13 @@ func runSnapshotCreateCommand(args []string) error {
 		return nil
 	}
 
-	log.Printf("[snapshot] completed with warnings: skipped %d path(s) due to permission/transient errors", stats.warnings)
+	log.Printf("[snapshot] completed with warnings: %d recoverable issue(s)", stats.warnings)
 	if !opts.verbose {
 		for _, warning := range stats.warningSamples {
 			log.Printf("[snapshot] warning: %s", warning)
 		}
 		if stats.warnings > len(stats.warningSamples) {
-			log.Printf("[snapshot] warning: ... and %d more (use -v for per-path warnings)", stats.warnings-len(stats.warningSamples))
+			log.Printf("[snapshot] warning: ... and %d more (use -v for per-item warnings)", stats.warnings-len(stats.warningSamples))
 		}
 	}
 
@@ -488,7 +626,7 @@ func runSnapshotHistoryCommand(args []string) error {
 		targetPath = "."
 	}
 
-	absTargetPath, err := filepath.Abs(targetPath)
+	resolvedTargetPath, err := resolveSnapshotPointerPath(targetPath)
 	if err != nil {
 		return fmt.Errorf("resolve target path: %w", err)
 	}
@@ -503,7 +641,7 @@ func runSnapshotHistoryCommand(args []string) error {
 	}
 	defer db.Close()
 
-	pointers, err := listPointersForPath(db, absTargetPath, *limit)
+	pointers, err := listPointersForPath(db, resolvedTargetPath, *limit)
 	if err != nil {
 		return err
 	}
@@ -521,7 +659,7 @@ func runSnapshotHistoryCommand(args []string) error {
 	return renderSnapshotHistoryOutput(
 		resolvedOutputMode,
 		snapshotHistoryOutput{
-			Path:    absTargetPath,
+			Path:    resolvedTargetPath,
 			DB:      absDBPath,
 			Count:   len(entries),
 			Entries: entries,
@@ -564,7 +702,7 @@ func runSnapshotDiffCommand(args []string) error {
 		targetPath = "."
 	}
 
-	absTargetPath, err := filepath.Abs(targetPath)
+	resolvedTargetPath, err := resolveSnapshotPointerPath(targetPath)
 	if err != nil {
 		return fmt.Errorf("resolve target path: %w", err)
 	}
@@ -579,7 +717,7 @@ func runSnapshotDiffCommand(args []string) error {
 	}
 	defer db.Close()
 
-	fromPointer, toPointer, err := resolvePointersForDiff(db, absTargetPath, *fromTime, *toTime)
+	fromPointer, toPointer, err := resolvePointersForDiff(db, resolvedTargetPath, *fromTime, *toTime)
 	if err != nil {
 		return err
 	}
@@ -615,7 +753,7 @@ func runSnapshotDiffCommand(args []string) error {
 	return renderSnapshotDiffOutput(
 		resolvedOutputMode,
 		snapshotDiffOutput{
-			Path: absTargetPath,
+			Path: resolvedTargetPath,
 			DB:   absDBPath,
 			From: snapshotDiffPointerOutput{
 				TimeNS:  fromPointer.SnapshotTimeNS,
@@ -639,6 +777,21 @@ func runSnapshotDiffCommand(args []string) error {
 			Changes: changeOutput,
 		},
 	)
+}
+
+func resolveSnapshotPointerPath(path string) (string, error) {
+	if strings.HasPrefix(path, snapshotRemotePathPrefix) {
+		return path, nil
+	}
+	return filepath.Abs(path)
+}
+
+func snapshotRemotePath(remoteTarget string) string {
+	normalized := strings.TrimSpace(remoteTarget)
+	if strings.HasPrefix(normalized, snapshotRemotePathPrefix) {
+		return normalized
+	}
+	return snapshotRemotePathPrefix + normalized
 }
 
 func defaultSnapshotDBPath() string {
@@ -718,6 +871,19 @@ func initSnapshotSchema(db *sql.DB) error {
 			digest TEXT NOT NULL,
 			PRIMARY KEY (blake3, algo)
 		);`,
+		`CREATE TABLE IF NOT EXISTS remote_hash_cache (
+			remote_path TEXT NOT NULL,
+			object_path TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			mod_time_ns INTEGER NOT NULL,
+			etag TEXT NOT NULL,
+			hash_algo TEXT NOT NULL,
+			hash_digest TEXT NOT NULL,
+			source TEXT NOT NULL,
+			confidence TEXT NOT NULL,
+			updated_at_ns INTEGER NOT NULL,
+			PRIMARY KEY (remote_path, object_path, hash_algo)
+		);`,
 		`CREATE TABLE IF NOT EXISTS pointers (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			path TEXT NOT NULL,
@@ -731,6 +897,7 @@ func initSnapshotSchema(db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS tree_entry_tags_tag_tree_idx ON tree_entry_tags(tag_id, tree_hash);",
 		"CREATE INDEX IF NOT EXISTS tree_entry_tags_tree_tag_idx ON tree_entry_tags(tree_hash, tag_id);",
 		"CREATE INDEX IF NOT EXISTS hash_mappings_algo_digest_idx ON hash_mappings(algo, digest);",
+		"CREATE INDEX IF NOT EXISTS remote_hash_cache_lookup_idx ON remote_hash_cache(remote_path, object_path);",
 	}
 
 	for _, stmt := range stmts {
@@ -1254,15 +1421,24 @@ func recordSnapshotWarningIfRecoverable(stats *snapshotStats, opts snapshotOptio
 		return false
 	}
 
-	stats.warnings++
 	message := fmt.Sprintf("%s %q: %v", op, path, err)
+	_ = recordSnapshotWarning(stats, opts, message)
+	return true
+}
+
+func recordSnapshotWarning(stats *snapshotStats, opts snapshotOptions, message string) error {
+	if opts.strict {
+		return stderrors.New(message)
+	}
+
+	stats.warnings++
 	if len(stats.warningSamples) < snapshotWarningSampleLimit {
 		stats.warningSamples = append(stats.warningSamples, message)
 	}
 	if opts.verbose {
 		log.Printf("[snapshot] warning: %s", message)
 	}
-	return true
+	return nil
 }
 
 func canIgnoreSnapshotIngestError(err error) bool {
@@ -1274,6 +1450,402 @@ func canIgnoreSnapshotPathError(err error) bool {
 		stderrors.Is(err, syscall.ENOTDIR) ||
 		stderrors.Is(err, syscall.EACCES) ||
 		stderrors.Is(err, syscall.EPERM)
+}
+
+func runRcloneLSJSON(remoteTarget string) ([]byte, error) {
+	cmd := exec.Command("rclone", "lsjson", remoteTarget, "-R", "--hash", "--metadata")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return nil, fmt.Errorf("run rclone lsjson for %q: %w", remoteTarget, err)
+		}
+		return nil, fmt.Errorf("run rclone lsjson for %q: %w: %s", remoteTarget, err, msg)
+	}
+	return out, nil
+}
+
+func hashRemoteObjectBlake3(remoteObjectTarget string) (string, error) {
+	cmd := exec.Command("rclone", "cat", remoteObjectTarget)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", fmt.Errorf("open stdout pipe for rclone cat %q: %w", remoteObjectTarget, err)
+	}
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("start rclone cat for %q: %w", remoteObjectTarget, err)
+	}
+
+	hasher := blake3.New()
+	bufPtr := bufPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer bufPool.Put(bufPtr)
+
+	if _, err := io.CopyBuffer(hasher, stdout, buf); err != nil {
+		_ = cmd.Wait()
+		return "", fmt.Errorf("read remote object stream for %q: %w", remoteObjectTarget, err)
+	}
+	if err := cmd.Wait(); err != nil {
+		return "", fmt.Errorf("finish rclone cat for %q: %w", remoteObjectTarget, err)
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func ingestRcloneRemote(tx *sql.Tx, remoteTarget string, stats *snapshotStats, opts snapshotOptions) (string, error) {
+	out, err := snapshotRunRcloneLSJSON(remoteTarget)
+	if err != nil {
+		return "", err
+	}
+
+	entries := make([]snapshotRemoteLSJSONEntry, 0)
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return "", fmt.Errorf("decode rclone lsjson output for %q: %w", remoteTarget, err)
+	}
+
+	root := newSnapshotRemoteTreeNode()
+	for _, entry := range entries {
+		relPath := strings.TrimSpace(strings.Trim(entry.Path, "/"))
+		if relPath == "" {
+			relPath = strings.TrimSpace(strings.Trim(entry.Name, "/"))
+		}
+		relPath = strings.Trim(relPath, "/")
+		if relPath == "" {
+			continue
+		}
+
+		parts := splitRemotePath(relPath)
+		if len(parts) == 0 {
+			continue
+		}
+
+		node := root
+		for i := 0; i < len(parts)-1; i++ {
+			node = ensureSnapshotRemoteSubdir(node, parts[i])
+		}
+
+		leaf := parts[len(parts)-1]
+		if entry.IsDir {
+			ensureSnapshotRemoteSubdir(node, leaf)
+			continue
+		}
+
+		entry.Path = strings.Join(parts, "/")
+		entry.Name = leaf
+		node.files[leaf] = entry
+	}
+
+	return ingestRcloneRemoteTree(tx, snapshotRemotePath(remoteTarget), root, stats, opts)
+}
+
+func ingestRcloneRemoteTree(tx *sql.Tx, remotePath string, node *snapshotRemoteTreeNode, stats *snapshotStats, opts snapshotOptions) (string, error) {
+	entries := make([]treeEntry, 0, len(node.dirs)+len(node.files))
+
+	dirNames := make([]string, 0, len(node.dirs))
+	for name := range node.dirs {
+		dirNames = append(dirNames, name)
+	}
+	sort.Strings(dirNames)
+
+	for _, name := range dirNames {
+		childHash, err := ingestRcloneRemoteTree(tx, remotePath, node.dirs[name], stats, opts)
+		if err != nil {
+			return "", err
+		}
+		entries = append(entries, treeEntry{
+			Name:        name,
+			Kind:        snapshotKindTree,
+			TargetHash:  childHash,
+			Mode:        snapshotRemoteDirMode,
+			ModTimeUnix: 0,
+			Size:        0,
+		})
+	}
+
+	fileNames := make([]string, 0, len(node.files))
+	for name := range node.files {
+		fileNames = append(fileNames, name)
+	}
+	sort.Strings(fileNames)
+
+	for _, name := range fileNames {
+		entry := node.files[name]
+		fileHash, err := resolveRcloneRemoteFileHash(tx, remotePath, entry, stats, opts)
+		if err != nil {
+			return "", err
+		}
+		modTimeNS := int64(0)
+		if !entry.ModTime.IsZero() {
+			modTimeNS = entry.ModTime.UnixNano()
+		}
+		entries = append(entries, treeEntry{
+			Name:        name,
+			Kind:        snapshotKindFile,
+			TargetHash:  fileHash,
+			Mode:        snapshotRemoteFileMode,
+			ModTimeUnix: modTimeNS,
+			Size:        entry.Size,
+		})
+		stats.files++
+	}
+
+	treeHash := hashTree(entries)
+	if err := insertTree(tx, treeHash, entries); err != nil {
+		return "", err
+	}
+	stats.trees++
+	return treeHash, nil
+}
+
+func resolveRcloneRemoteFileHash(
+	tx *sql.Tx,
+	remotePath string,
+	entry snapshotRemoteLSJSONEntry,
+	stats *snapshotStats,
+	opts snapshotOptions,
+) (string, error) {
+	hashes := normalizeRemoteHashes(entry.Hashes)
+	modTimeNS := int64(0)
+	if !entry.ModTime.IsZero() {
+		modTimeNS = entry.ModTime.UnixNano()
+	}
+	etag := snapshotRemoteEntryETag(entry)
+
+	if blake3Digest := hashes[snapshotHashAlgo]; blake3Digest != "" {
+		if err := upsertRemoteHashCache(tx, remotePath, entry.Path, snapshotHashAlgo, blake3Digest, entry.Size, modTimeNS, etag, "remote", "strong"); err != nil {
+			return "", err
+		}
+		for algo, digest := range hashes {
+			if algo == snapshotHashAlgo || digest == "" {
+				continue
+			}
+			if err := upsertRemoteHashCache(tx, remotePath, entry.Path, algo, digest, entry.Size, modTimeNS, etag, "remote", "medium"); err != nil {
+				return "", err
+			}
+			if err := upsertHashMapping(tx, blake3Digest, algo, digest); err != nil {
+				return "", err
+			}
+		}
+		return blake3Digest, nil
+	}
+
+	if cachedBlake3, ok, err := lookupCachedRemoteBlake3(tx, remotePath, entry.Path, entry.Size, modTimeNS, etag); err != nil {
+		return "", err
+	} else if ok {
+		return cachedBlake3, nil
+	}
+
+	if len(hashes) > 0 {
+		algos := make([]string, 0, len(hashes))
+		for algo := range hashes {
+			algos = append(algos, algo)
+		}
+		sort.Strings(algos)
+
+		for _, algo := range algos {
+			digest := hashes[algo]
+			if digest == "" {
+				continue
+			}
+			if err := upsertRemoteHashCache(tx, remotePath, entry.Path, algo, digest, entry.Size, modTimeNS, etag, "remote", "medium"); err != nil {
+				return "", err
+			}
+			blake3Digest, found, err := lookupHashMappingByAlgoDigestTx(tx, algo, digest)
+			if err != nil {
+				return "", err
+			}
+			if found {
+				if err := upsertRemoteHashCache(tx, remotePath, entry.Path, snapshotHashAlgo, blake3Digest, entry.Size, modTimeNS, etag, "mapping", "medium"); err != nil {
+					return "", err
+				}
+				return blake3Digest, nil
+			}
+		}
+	}
+
+	objectTarget := joinRcloneRemoteObject(strings.TrimPrefix(remotePath, snapshotRemotePathPrefix), entry.Path)
+	blake3Digest, err := snapshotHashRemoteObjectBlake3(objectTarget)
+	if err != nil {
+		return "", fmt.Errorf("compute blake3 for remote object %q: %w", objectTarget, err)
+	}
+	if err := upsertRemoteHashCache(tx, remotePath, entry.Path, snapshotHashAlgo, blake3Digest, entry.Size, modTimeNS, etag, "computed", "strong"); err != nil {
+		return "", err
+	}
+	for algo, digest := range hashes {
+		if algo == snapshotHashAlgo || digest == "" {
+			continue
+		}
+		if err := upsertHashMapping(tx, blake3Digest, algo, digest); err != nil {
+			return "", err
+		}
+	}
+	if opts.verbose {
+		log.Printf("[snapshot] computed blake3 for remote object %q", objectTarget)
+	}
+	return blake3Digest, nil
+}
+
+func normalizeRemoteHashes(hashes map[string]string) map[string]string {
+	out := make(map[string]string)
+	for rawAlgo, rawDigest := range hashes {
+		algo := strings.ToLower(strings.TrimSpace(rawAlgo))
+		digest := strings.TrimSpace(rawDigest)
+		if algo == "" || digest == "" {
+			continue
+		}
+		out[algo] = digest
+	}
+	return out
+}
+
+func snapshotRemoteEntryETag(entry snapshotRemoteLSJSONEntry) string {
+	for key, value := range entry.Metadata {
+		if strings.EqualFold(strings.TrimSpace(key), "etag") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func splitRemotePath(path string) []string {
+	rawParts := strings.Split(strings.ReplaceAll(path, "\\", "/"), "/")
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		part = strings.TrimSpace(part)
+		if part == "" || part == "." {
+			continue
+		}
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func joinRcloneRemoteObject(baseTarget, objectPath string) string {
+	base := strings.TrimSpace(baseTarget)
+	obj := strings.Trim(strings.TrimSpace(objectPath), "/")
+	if obj == "" {
+		return base
+	}
+	if strings.HasSuffix(base, ":") || strings.HasSuffix(base, "/") {
+		return base + obj
+	}
+	return base + "/" + obj
+}
+
+func newSnapshotRemoteTreeNode() *snapshotRemoteTreeNode {
+	return &snapshotRemoteTreeNode{
+		dirs:  make(map[string]*snapshotRemoteTreeNode),
+		files: make(map[string]snapshotRemoteLSJSONEntry),
+	}
+}
+
+func ensureSnapshotRemoteSubdir(node *snapshotRemoteTreeNode, name string) *snapshotRemoteTreeNode {
+	child, exists := node.dirs[name]
+	if exists {
+		return child
+	}
+	child = newSnapshotRemoteTreeNode()
+	node.dirs[name] = child
+	return child
+}
+
+func lookupHashMappingByAlgoDigestTx(tx *sql.Tx, algo, digest string) (string, bool, error) {
+	var blake3Digest string
+	if err := tx.QueryRow(
+		`SELECT blake3
+		 FROM hash_mappings
+		 WHERE algo = ? AND digest = ?`,
+		algo,
+		digest,
+	).Scan(&blake3Digest); err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("query hash mapping for algo=%q digest=%q: %w", algo, digest, err)
+	}
+	return blake3Digest, true, nil
+}
+
+func lookupCachedRemoteBlake3(
+	tx *sql.Tx,
+	remotePath string,
+	objectPath string,
+	size int64,
+	modTimeNS int64,
+	etag string,
+) (string, bool, error) {
+	var cachedSize int64
+	var cachedModTimeNS int64
+	var cachedETag string
+	var cachedDigest string
+	if err := tx.QueryRow(
+		`SELECT size, mod_time_ns, etag, hash_digest
+		 FROM remote_hash_cache
+		 WHERE remote_path = ? AND object_path = ? AND hash_algo = ?`,
+		remotePath,
+		objectPath,
+		snapshotHashAlgo,
+	).Scan(&cachedSize, &cachedModTimeNS, &cachedETag, &cachedDigest); err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("query remote hash cache for %q/%q: %w", remotePath, objectPath, err)
+	}
+
+	etagMatches := etag == cachedETag || etag == "" || cachedETag == ""
+	if size == cachedSize && modTimeNS == cachedModTimeNS && etagMatches {
+		return cachedDigest, true, nil
+	}
+	return "", false, nil
+}
+
+func upsertRemoteHashCache(
+	tx *sql.Tx,
+	remotePath string,
+	objectPath string,
+	algo string,
+	digest string,
+	size int64,
+	modTimeNS int64,
+	etag string,
+	source string,
+	confidence string,
+) error {
+	if _, err := tx.Exec(
+		`INSERT INTO remote_hash_cache(
+			remote_path,
+			object_path,
+			size,
+			mod_time_ns,
+			etag,
+			hash_algo,
+			hash_digest,
+			source,
+			confidence,
+			updated_at_ns
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(remote_path, object_path, hash_algo) DO UPDATE SET
+			size = excluded.size,
+			mod_time_ns = excluded.mod_time_ns,
+			etag = excluded.etag,
+			hash_digest = excluded.hash_digest,
+			source = excluded.source,
+			confidence = excluded.confidence,
+			updated_at_ns = excluded.updated_at_ns`,
+		remotePath,
+		objectPath,
+		size,
+		modTimeNS,
+		etag,
+		algo,
+		digest,
+		source,
+		confidence,
+		time.Now().UTC().UnixNano(),
+	); err != nil {
+		return fmt.Errorf("upsert remote hash cache for %q/%q (%s): %w", remotePath, objectPath, algo, err)
+	}
+	return nil
 }
 
 func hashTree(entries []treeEntry) string {
