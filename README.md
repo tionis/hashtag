@@ -37,6 +37,15 @@ Output mode convention:
 - Many commands support `-output auto|pretty|kv|json`.
 - `auto` chooses `pretty` for interactive terminals and `kv` for non-interactive/scripted output.
 
+## Local Path Environment Overrides
+
+Forge stores local state under XDG paths by default. These env vars override specific local paths:
+
+- `FORGE_SNAPSHOT_DB` (default `${XDG_DATA_HOME}/forge/snapshot.db`, fallback `~/.local/share/forge/snapshot.db`)
+- `FORGE_BLOB_DB` (default `${XDG_DATA_HOME}/forge/blob.db`, fallback `~/.local/share/forge/blob.db`)
+- `FORGE_BLOB_CACHE` (default `${XDG_CACHE_HOME}/forge/blobs`, fallback `~/.cache/forge/blobs`)
+- `FORGE_REMOTE_DB` (default `${XDG_DATA_HOME}/forge/remote.db`, fallback `~/.local/share/forge/remote.db`)
+
 ## Hash Tool
 
 ```bash
