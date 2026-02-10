@@ -70,23 +70,19 @@ func configureVectorReplicationFromRemoteConfig(ctx context.Context, cfg *vector
 	if cfg == nil {
 		return vectorLeaseSetup{}, nil
 	}
-	bootstrap, err := loadRemoteS3BootstrapFromEnv()
+	session, err := loadRemoteBackendSession(ctx)
 	if err != nil {
-		return vectorLeaseSetup{}, fmt.Errorf("load remote bootstrap for vector replication: %w", err)
-	}
-	remoteCfg, _, err := loadRemoteGlobalConfigWithCache(ctx, bootstrap, nil)
-	if err != nil {
-		return vectorLeaseSetup{}, fmt.Errorf("load remote config for vector replication: %w", err)
+		return vectorLeaseSetup{}, fmt.Errorf("load remote backend session for vector replication: %w", err)
 	}
 
-	replicaURL, err := buildVectorReplicaURL(bootstrap, remoteCfg)
+	replicaURL, err := buildVectorReplicaURL(session.Bootstrap, session.Config)
 	if err != nil {
 		return vectorLeaseSetup{}, err
 	}
 	cfg.ReplicaURL = replicaURL
 	return vectorLeaseSetup{
-		Bootstrap: bootstrap,
-		Config:    remoteCfg,
+		Bootstrap: session.Bootstrap,
+		Config:    session.Config,
 	}, nil
 }
 

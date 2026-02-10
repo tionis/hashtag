@@ -127,22 +127,18 @@ func putRemoteGlobalConfigToS3(ctx context.Context, client *s3.Client, bootstrap
 }
 
 func openConfiguredBlobRemoteStore(ctx context.Context) (blobRemoteStore, error) {
-	bootstrap, err := loadRemoteS3BootstrapFromEnv()
+	session, err := loadRemoteBackendSession(ctx)
 	if err != nil {
 		return nil, err
 	}
-	cfg, _, err := loadRemoteGlobalConfigWithCache(ctx, bootstrap, nil)
-	if err != nil {
-		return nil, err
-	}
-	client, err := newS3ClientFromBootstrapWithResponseChecksumValidation(ctx, bootstrap, responseChecksumValidationForCapabilities(cfg.S3.Capabilities))
+	client, err := session.newS3Client(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &s3BlobRemoteStore{
 		client:    client,
-		bootstrap: bootstrap,
-		cfg:       cfg,
+		bootstrap: session.Bootstrap,
+		cfg:       session.Config,
 	}, nil
 }
 
