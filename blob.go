@@ -42,6 +42,9 @@ const (
 	blobRemoteBucketDefault  = "default"
 )
 
+var errReflinkUnsupported = stderrors.New("copy-on-write clone not supported")
+var cloneFileCoWFunc = cloneFileCoW
+
 type blobCipherPackage struct {
 	CID        string
 	OID        string
@@ -72,6 +75,19 @@ type blobGetOutput struct {
 	CipherSize int64  `json:"cipher_size"`
 	CipherHash string `json:"cipher_hash"`
 	CachePath  string `json:"cache_path"`
+}
+
+type blobRemoveOutput struct {
+	CID                string `json:"cid"`
+	OID                string `json:"oid"`
+	CachePath          string `json:"cache_path"`
+	LocalRequested     bool   `json:"local_requested"`
+	LocalRemoved       bool   `json:"local_removed"`
+	RemoteRequested    bool   `json:"remote_requested"`
+	RemoteRemoved      bool   `json:"remote_removed"`
+	BlobMapRowsDeleted int64  `json:"blob_map_rows_deleted"`
+	InventoryRowsDel   int64  `json:"inventory_rows_deleted"`
+	Server             string `json:"server,omitempty"`
 }
 
 type blobListEntryOutput struct {
@@ -120,7 +136,7 @@ func runBlobPutCommand(args []string) error {
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s blob put [options] <path>\n\n", os.Args[0])
-		fmt.Fprintln(fs.Output(), "Encrypt a file deterministically and persist blob metadata/cache.")
+		fmt.Fprintln(fs.Output(), "Cache a plaintext blob locally and optionally upload encrypted blob payload to a backend.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
 	}
@@ -158,16 +174,14 @@ func runBlobPutCommand(args []string) error {
 		return fmt.Errorf("read input file %q: %w", absInputPath, err)
 	}
 
-	pkg, err := encryptBlobData(plain)
+	cidSum := blake3.Sum256(plain)
+	cid := hex.EncodeToString(cidSum[:])
+	oid := deriveBlobOID(cidSum)
+	cachePath, err := blobPlainCachePath(*cacheDir, cid)
 	if err != nil {
 		return err
 	}
-
-	cachePath, err := blobObjectPath(*cacheDir, pkg.OID)
-	if err != nil {
-		return err
-	}
-	if err := ensureBlobObject(cachePath, pkg.Encoded, pkg.CipherHash); err != nil {
+	if err := ensurePlainBlobCacheObject(cachePath, absInputPath, plain, cid, *verbose); err != nil {
 		return err
 	}
 
@@ -187,12 +201,14 @@ func runBlobPutCommand(args []string) error {
 	}
 	defer tx.Rollback()
 
+	cipherSize := int64(0)
+	cipherHash := ""
 	if err := upsertBlobMap(tx, blobMapRow{
-		CID:        pkg.CID,
-		OID:        pkg.OID,
-		PlainSize:  pkg.PlainSize,
-		CipherSize: pkg.CipherSize,
-		CipherHash: pkg.CipherHash,
+		CID:        cid,
+		OID:        oid,
+		PlainSize:  int64(len(plain)),
+		CipherSize: cipherSize,
+		CipherHash: cipherHash,
 		CachePath:  cachePath,
 		UpdatedAt:  time.Now().UTC().UnixNano(),
 	}); err != nil {
@@ -201,25 +217,47 @@ func runBlobPutCommand(args []string) error {
 
 	uploaded := false
 	if strings.TrimSpace(*serverURL) != "" {
-		if *verbose {
-			log.Printf("[blob] uploading %s to %s", pkg.OID, *serverURL)
+		pkg, err := encryptBlobData(plain)
+		if err != nil {
+			return err
 		}
-		etag, err := uploadBlobToServer(*serverURL, pkg.OID, pkg.Encoded)
+		if pkg.CID != cid || pkg.OID != oid {
+			return fmt.Errorf("internal blob identity mismatch while preparing encrypted payload")
+		}
+		cipherSize = pkg.CipherSize
+		cipherHash = pkg.CipherHash
+
+		if err := upsertBlobMap(tx, blobMapRow{
+			CID:        cid,
+			OID:        oid,
+			PlainSize:  int64(len(plain)),
+			CipherSize: cipherSize,
+			CipherHash: cipherHash,
+			CachePath:  cachePath,
+			UpdatedAt:  time.Now().UTC().UnixNano(),
+		}); err != nil {
+			return err
+		}
+
+		if *verbose {
+			log.Printf("[blob] uploading %s to %s", oid, *serverURL)
+		}
+		etag, err := uploadBlobToServer(*serverURL, oid, pkg.Encoded)
 		if err != nil {
 			return err
 		}
 		if etag == "" {
-			etag = pkg.CipherHash
+			etag = cipherHash
 		}
 		scanID := fmt.Sprintf("blob-put-%d", time.Now().UTC().UnixNano())
 		if err := upsertRemoteBlobInventory(tx, blobRemoteInventoryRow{
 			Backend:    strings.TrimSpace(*backend),
 			Bucket:     strings.TrimSpace(*bucket),
-			ObjectKey:  pkg.OID,
-			OID:        pkg.OID,
-			Size:       pkg.CipherSize,
+			ObjectKey:  oid,
+			OID:        oid,
+			Size:       cipherSize,
 			ETag:       etag,
-			CipherHash: pkg.CipherHash,
+			CipherHash: cipherHash,
 			LastSeenNS: time.Now().UTC().UnixNano(),
 			ScanID:     scanID,
 		}); err != nil {
@@ -236,11 +274,11 @@ func runBlobPutCommand(args []string) error {
 		resolvedOutputMode,
 		blobPutOutput{
 			SourcePath: absInputPath,
-			CID:        pkg.CID,
-			OID:        pkg.OID,
-			PlainSize:  pkg.PlainSize,
-			CipherSize: pkg.CipherSize,
-			CipherHash: pkg.CipherHash,
+			CID:        cid,
+			OID:        oid,
+			PlainSize:  int64(len(plain)),
+			CipherSize: cipherSize,
+			CipherHash: cipherHash,
 			CachePath:  cachePath,
 			Uploaded:   uploaded,
 			Server:     strings.TrimSpace(*serverURL),
@@ -256,7 +294,7 @@ func runBlobGetCommand(args []string) error {
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s blob get [options]\n\n", os.Args[0])
-		fmt.Fprintln(fs.Output(), "Fetch an encrypted blob, decrypt it, and write the plaintext to -out.")
+		fmt.Fprintln(fs.Output(), "Read a plaintext blob from local cache, or fetch encrypted data from backend and decrypt to -out.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
 	}
@@ -304,45 +342,140 @@ func runBlobGetCommand(args []string) error {
 		} else if requestedOID != derivedOID {
 			return fmt.Errorf("-oid does not match deterministic OID derived from -cid")
 		}
+	} else if err := validateBlobOID(requestedOID); err != nil {
+		return fmt.Errorf("parse -oid: %w", err)
 	}
 
-	cachePath, err := blobObjectPath(*cacheDir, requestedOID)
+	absDBPath, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve db path: %w", err)
+	}
+	db, err := openBlobDB(absDBPath)
 	if err != nil {
 		return err
 	}
+	defer db.Close()
 
-	encoded, err := os.ReadFile(cachePath)
+	var existingRow blobMapRow
+	existingFound := false
+	if requestedCID == "" {
+		row, found, err := lookupBlobMapByOID(db, requestedOID)
+		if err != nil {
+			return err
+		}
+		if found {
+			existingRow = row
+			existingFound = true
+			requestedCID = row.CID
+		}
+	} else {
+		row, found, err := lookupBlobMapByCID(db, requestedCID)
+		if err != nil {
+			return err
+		}
+		if found {
+			existingRow = row
+			existingFound = true
+		}
+	}
+	if requestedOID == "" && requestedCID != "" {
+		cidBytes, err := parseDigestHex32(requestedCID)
+		if err != nil {
+			return fmt.Errorf("parse resolved cid: %w", err)
+		}
+		requestedOID = deriveBlobOID(cidBytes)
+	}
+
+	plain := []byte(nil)
+	pkg := blobCipherPackage{}
 	source := "cache"
 	etag := ""
-	if err != nil {
-		if !os.IsNotExist(err) {
+	cachePath := ""
+	cacheHit := false
+
+	if requestedCID != "" {
+		cachePath, err = blobPlainCachePath(*cacheDir, requestedCID)
+		if err != nil {
+			return err
+		}
+		plain, err = os.ReadFile(cachePath)
+		if err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("read cached blob %q: %w", cachePath, err)
 		}
-		if strings.TrimSpace(*serverURL) == "" {
-			return fmt.Errorf("blob %q not found in cache and no -server provided", requestedOID)
+		if err == nil {
+			cidSum := blake3.Sum256(plain)
+			actualCID := hex.EncodeToString(cidSum[:])
+			if actualCID != requestedCID {
+				return fmt.Errorf("cached blob %q cid mismatch: expected %s got %s", cachePath, requestedCID, actualCID)
+			}
+			pkg = blobCipherPackage{
+				CID:       requestedCID,
+				OID:       deriveBlobOID(cidSum),
+				PlainSize: int64(len(plain)),
+			}
+			if existingFound && existingRow.CID == requestedCID {
+				pkg.CipherSize = existingRow.CipherSize
+				pkg.CipherHash = existingRow.CipherHash
+			}
+			cacheHit = true
+		}
+	}
+
+	if !cacheHit && strings.TrimSpace(*serverURL) != "" {
+		if requestedOID == "" {
+			return fmt.Errorf("cannot fetch from server without oid")
 		}
 		if *verbose {
 			log.Printf("[blob] cache miss for %s, fetching from %s", requestedOID, *serverURL)
 		}
-		encoded, etag, err = fetchBlobFromServer(*serverURL, requestedOID)
+		encoded, fetchedETag, err := fetchBlobFromServer(*serverURL, requestedOID)
 		if err != nil {
 			return err
 		}
-		if err := ensureBlobObject(cachePath, encoded, blake3Hex(encoded)); err != nil {
+		decodedPkg, decodedPlain, err := decodeAndDecryptBlobData(encoded)
+		if err != nil {
+			return err
+		}
+		if requestedCID != "" && decodedPkg.CID != requestedCID {
+			return fmt.Errorf("decrypted CID mismatch: expected %s got %s", requestedCID, decodedPkg.CID)
+		}
+		if requestedOID != "" && decodedPkg.OID != requestedOID {
+			return fmt.Errorf("decrypted OID mismatch: expected %s got %s", requestedOID, decodedPkg.OID)
+		}
+		requestedCID = decodedPkg.CID
+		requestedOID = decodedPkg.OID
+		plain = decodedPlain
+		pkg = decodedPkg
+		etag = fetchedETag
+		cachePath, err = blobPlainCachePath(*cacheDir, requestedCID)
+		if err != nil {
+			return err
+		}
+		if err := ensureBlobObject(cachePath, plain, requestedCID); err != nil {
 			return err
 		}
 		source = "server"
+		cacheHit = true
+	}
+	if !cacheHit {
+		if requestedCID != "" {
+			return fmt.Errorf("blob %q not found in local cache and no -server provided", requestedCID)
+		}
+		return fmt.Errorf("blob %q not found in metadata/local cache and no -server provided", requestedOID)
 	}
 
-	pkg, plain, err := decodeAndDecryptBlobData(encoded)
-	if err != nil {
-		return err
+	if pkg.CID == "" {
+		cidSum := blake3.Sum256(plain)
+		pkg.CID = hex.EncodeToString(cidSum[:])
+		pkg.OID = deriveBlobOID(cidSum)
+		pkg.PlainSize = int64(len(plain))
 	}
+
 	if requestedCID != "" && pkg.CID != requestedCID {
-		return fmt.Errorf("decrypted CID mismatch: expected %s got %s", requestedCID, pkg.CID)
+		return fmt.Errorf("resolved CID mismatch: expected %s got %s", requestedCID, pkg.CID)
 	}
 	if requestedOID != "" && pkg.OID != requestedOID {
-		return fmt.Errorf("decrypted OID mismatch: expected %s got %s", requestedOID, pkg.OID)
+		return fmt.Errorf("resolved OID mismatch: expected %s got %s", requestedOID, pkg.OID)
 	}
 
 	absOutPath, err := filepath.Abs(*outPath)
@@ -355,16 +488,6 @@ func runBlobGetCommand(args []string) error {
 	if err := os.WriteFile(absOutPath, plain, 0o600); err != nil {
 		return fmt.Errorf("write output file %q: %w", absOutPath, err)
 	}
-
-	absDBPath, err := filepath.Abs(*dbPath)
-	if err != nil {
-		return fmt.Errorf("resolve db path: %w", err)
-	}
-	db, err := openBlobDB(absDBPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
 
 	tx, err := db.Begin()
 	if err != nil {
@@ -541,6 +664,176 @@ func runBlobServeCommand(args []string) error {
 	return nil
 }
 
+func runBlobRemoveCommand(args []string) error {
+	defaultDB := defaultBlobDBPath()
+	defaultCache := defaultBlobCacheDir()
+
+	fs := flag.NewFlagSet("blob rm", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s blob rm [options]\n\n", os.Args[0])
+		fmt.Fprintln(fs.Output(), "Remove a blob from local plaintext cache and optionally from a remote encrypted backend.")
+		fmt.Fprintln(fs.Output(), "\nOptions:")
+		fs.PrintDefaults()
+	}
+
+	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
+	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
+	serverURL := fs.String("server", "", "Blob backend server base URL (required for -remote)")
+	backend := fs.String("backend", "", "Optional inventory backend filter for remote inventory deletion")
+	bucket := fs.String("bucket", "", "Optional inventory bucket filter for remote inventory deletion")
+	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
+	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
+	local := fs.Bool("local", true, "Delete local cached plaintext and local blob mapping metadata")
+	remote := fs.Bool("remote", false, "Delete encrypted blob from remote backend and clear matching remote inventory rows")
+	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	verbose := fs.Bool("v", false, "Verbose output")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+
+	if !*local && !*remote {
+		return fmt.Errorf("nothing to do: enable at least one of -local or -remote")
+	}
+
+	resolvedOutputMode, err := resolvePrettyKVJSONOutputMode(*outputMode)
+	if err != nil {
+		return err
+	}
+
+	requestedCID := normalizeDigestHex(strings.TrimSpace(*cidFlag))
+	requestedOID := normalizeDigestHex(strings.TrimSpace(*oidFlag))
+	if requestedCID == "" && requestedOID == "" {
+		return fmt.Errorf("either -cid or -oid must be provided")
+	}
+	if requestedCID != "" {
+		cidBytes, err := parseDigestHex32(requestedCID)
+		if err != nil {
+			return fmt.Errorf("parse -cid: %w", err)
+		}
+		derivedOID := deriveBlobOID(cidBytes)
+		if requestedOID == "" {
+			requestedOID = derivedOID
+		} else if requestedOID != derivedOID {
+			return fmt.Errorf("-oid does not match deterministic OID derived from -cid")
+		}
+	} else if err := validateBlobOID(requestedOID); err != nil {
+		return fmt.Errorf("parse -oid: %w", err)
+	}
+
+	if *remote && strings.TrimSpace(*serverURL) == "" {
+		return fmt.Errorf("-server is required when -remote is set")
+	}
+
+	absDBPath, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve db path: %w", err)
+	}
+	db, err := openBlobDB(absDBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if requestedCID == "" {
+		row, found, err := lookupBlobMapByOID(db, requestedOID)
+		if err != nil {
+			return err
+		}
+		if found {
+			requestedCID = row.CID
+		}
+	}
+	if requestedOID == "" && requestedCID != "" {
+		cidBytes, err := parseDigestHex32(requestedCID)
+		if err != nil {
+			return fmt.Errorf("parse resolved cid: %w", err)
+		}
+		requestedOID = deriveBlobOID(cidBytes)
+	}
+
+	cachePath := ""
+	localRemoved := false
+	if *local {
+		if requestedCID == "" {
+			return fmt.Errorf("cannot remove local cache with unknown cid; provide -cid or keep blob mapping metadata")
+		}
+		cachePath, err = blobPlainCachePath(*cacheDir, requestedCID)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(cachePath); err != nil {
+			if !os.IsNotExist(err) {
+				return fmt.Errorf("remove local blob cache %q: %w", cachePath, err)
+			}
+		} else {
+			localRemoved = true
+			if *verbose {
+				log.Printf("[blob] removed local cache object %s", cachePath)
+			}
+		}
+	}
+
+	remoteRemoved := false
+	if *remote {
+		remoteRemoved, err = deleteBlobFromServer(*serverURL, requestedOID)
+		if err != nil {
+			return err
+		}
+		if *verbose {
+			if remoteRemoved {
+				log.Printf("[blob] removed remote encrypted object %s from %s", requestedOID, *serverURL)
+			} else {
+				log.Printf("[blob] remote encrypted object %s not found on %s", requestedOID, *serverURL)
+			}
+		}
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("start blob remove transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	rowsDeleted := int64(0)
+	if *local {
+		rowsDeleted, err = deleteBlobMapRows(tx, requestedCID, requestedOID)
+		if err != nil {
+			return err
+		}
+	}
+	inventoryDeleted := int64(0)
+	if *remote {
+		inventoryDeleted, err = deleteRemoteBlobInventoryByOID(tx, strings.TrimSpace(*backend), strings.TrimSpace(*bucket), requestedOID)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit blob remove transaction: %w", err)
+	}
+
+	return renderBlobRemoveOutput(
+		resolvedOutputMode,
+		blobRemoveOutput{
+			CID:                requestedCID,
+			OID:                requestedOID,
+			CachePath:          cachePath,
+			LocalRequested:     *local,
+			LocalRemoved:       localRemoved,
+			RemoteRequested:    *remote,
+			RemoteRemoved:      remoteRemoved,
+			BlobMapRowsDeleted: rowsDeleted,
+			InventoryRowsDel:   inventoryDeleted,
+			Server:             strings.TrimSpace(*serverURL),
+		},
+	)
+}
+
 func newBlobHTTPHandler(rootDir string, db *sql.DB, backend string, bucket string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -625,6 +918,24 @@ func newBlobHTTPHandler(rootDir string, db *sql.DB, backend string, bucket strin
 				return
 			}
 			w.WriteHeader(http.StatusOK)
+		case http.MethodDelete:
+			objectRemoved := false
+			if err := os.Remove(objectPath); err != nil {
+				if !os.IsNotExist(err) {
+					http.Error(w, fmt.Sprintf("remove blob object: %v", err), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				objectRemoved = true
+			}
+			inventoryDeleted, err := deleteRemoteBlobInventoryObjectKeyDB(db, backend, bucket, oid)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("X-Forge-Object-Removed", strconv.FormatBool(objectRemoved))
+			w.Header().Set("X-Forge-Inventory-Deleted", strconv.FormatInt(inventoryDeleted, 10))
+			w.WriteHeader(http.StatusNoContent)
 		case http.MethodHead, http.MethodGet:
 			data, err := os.ReadFile(objectPath)
 			if err != nil {
@@ -713,6 +1024,44 @@ func renderBlobGetOutput(mode string, output blobGetOutput) error {
 			{Label: "Cipher Size", Value: strconv.FormatInt(output.CipherSize, 10)},
 			{Label: "Cipher Hash", Value: output.CipherHash},
 			{Label: "Cache Path", Value: output.CachePath},
+		})
+		return nil
+	default:
+		return fmt.Errorf("unsupported output mode %q", mode)
+	}
+}
+
+func renderBlobRemoveOutput(mode string, output blobRemoveOutput) error {
+	switch mode {
+	case outputModeKV:
+		fmt.Printf("cid=%s\n", output.CID)
+		fmt.Printf("oid=%s\n", output.OID)
+		fmt.Printf("cache_path=%s\n", output.CachePath)
+		fmt.Printf("local_requested=%t\n", output.LocalRequested)
+		fmt.Printf("local_removed=%t\n", output.LocalRemoved)
+		fmt.Printf("remote_requested=%t\n", output.RemoteRequested)
+		fmt.Printf("remote_removed=%t\n", output.RemoteRemoved)
+		fmt.Printf("blob_map_rows_deleted=%d\n", output.BlobMapRowsDeleted)
+		fmt.Printf("inventory_rows_deleted=%d\n", output.InventoryRowsDel)
+		if output.Server != "" {
+			fmt.Printf("server=%s\n", output.Server)
+		}
+		return nil
+	case outputModeJSON:
+		return printJSON(output)
+	case outputModePretty:
+		printPrettyTitle("Blob Remove")
+		printPrettyFields([]outputField{
+			{Label: "CID", Value: output.CID},
+			{Label: "OID", Value: output.OID},
+			{Label: "Cache Path", Value: output.CachePath},
+			{Label: "Local Requested", Value: strconv.FormatBool(output.LocalRequested)},
+			{Label: "Local Removed", Value: strconv.FormatBool(output.LocalRemoved)},
+			{Label: "Remote Requested", Value: strconv.FormatBool(output.RemoteRequested)},
+			{Label: "Remote Removed", Value: strconv.FormatBool(output.RemoteRemoved)},
+			{Label: "Blob Map Rows Deleted", Value: strconv.FormatInt(output.BlobMapRowsDeleted, 10)},
+			{Label: "Inventory Rows Deleted", Value: strconv.FormatInt(output.InventoryRowsDel, 10)},
+			{Label: "Server", Value: output.Server},
 		})
 		return nil
 	default:
@@ -997,6 +1346,147 @@ func listBlobMappings(db *sql.DB, limit int) ([]blobMapRow, error) {
 	return result, nil
 }
 
+func lookupBlobMapByCID(db *sql.DB, cid string) (blobMapRow, bool, error) {
+	row := blobMapRow{}
+	if err := db.QueryRow(
+		`SELECT cid, oid, plain_size, cipher_size, cipher_hash, cache_path, updated_at_ns
+		 FROM blob_map
+		 WHERE cid = ?`,
+		cid,
+	).Scan(&row.CID, &row.OID, &row.PlainSize, &row.CipherSize, &row.CipherHash, &row.CachePath, &row.UpdatedAt); err != nil {
+		if stderrors.Is(err, sql.ErrNoRows) {
+			return blobMapRow{}, false, nil
+		}
+		return blobMapRow{}, false, fmt.Errorf("lookup blob map by cid %q: %w", cid, err)
+	}
+	return row, true, nil
+}
+
+func lookupBlobMapByOID(db *sql.DB, oid string) (blobMapRow, bool, error) {
+	row := blobMapRow{}
+	if err := db.QueryRow(
+		`SELECT cid, oid, plain_size, cipher_size, cipher_hash, cache_path, updated_at_ns
+		 FROM blob_map
+		 WHERE oid = ?`,
+		oid,
+	).Scan(&row.CID, &row.OID, &row.PlainSize, &row.CipherSize, &row.CipherHash, &row.CachePath, &row.UpdatedAt); err != nil {
+		if stderrors.Is(err, sql.ErrNoRows) {
+			return blobMapRow{}, false, nil
+		}
+		return blobMapRow{}, false, fmt.Errorf("lookup blob map by oid %q: %w", oid, err)
+	}
+	return row, true, nil
+}
+
+func deleteBlobMapRows(tx *sql.Tx, cid string, oid string) (int64, error) {
+	cid = strings.TrimSpace(cid)
+	oid = strings.TrimSpace(oid)
+	if cid == "" && oid == "" {
+		return 0, fmt.Errorf("blob map delete requires cid or oid")
+	}
+
+	var (
+		res sql.Result
+		err error
+	)
+	switch {
+	case cid != "" && oid != "":
+		res, err = tx.Exec(`DELETE FROM blob_map WHERE cid = ? OR oid = ?`, cid, oid)
+	case cid != "":
+		res, err = tx.Exec(`DELETE FROM blob_map WHERE cid = ?`, cid)
+	default:
+		res, err = tx.Exec(`DELETE FROM blob_map WHERE oid = ?`, oid)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("delete blob map row(s) cid=%q oid=%q: %w", cid, oid, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("get blob map delete row count: %w", err)
+	}
+	return rows, nil
+}
+
+func deleteRemoteBlobInventoryByOID(tx *sql.Tx, backend string, bucket string, oid string) (int64, error) {
+	oid = strings.TrimSpace(oid)
+	if oid == "" {
+		return 0, fmt.Errorf("inventory delete by oid requires oid")
+	}
+	backend = strings.TrimSpace(backend)
+	bucket = strings.TrimSpace(bucket)
+
+	var (
+		res sql.Result
+		err error
+	)
+	switch {
+	case backend != "" && bucket != "":
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE oid = ? AND backend = ? AND bucket = ?`, oid, backend, bucket)
+	case backend != "":
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE oid = ? AND backend = ?`, oid, backend)
+	case bucket != "":
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE oid = ? AND bucket = ?`, oid, bucket)
+	default:
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE oid = ?`, oid)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("delete remote blob inventory rows by oid=%q: %w", oid, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("get remote inventory delete row count: %w", err)
+	}
+	return rows, nil
+}
+
+func deleteRemoteBlobInventoryObjectKey(tx *sql.Tx, backend string, bucket string, objectKey string) (int64, error) {
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return 0, fmt.Errorf("inventory delete by object key requires object key")
+	}
+	backend = strings.TrimSpace(backend)
+	bucket = strings.TrimSpace(bucket)
+
+	var (
+		res sql.Result
+		err error
+	)
+	switch {
+	case backend != "" && bucket != "":
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE object_key = ? AND backend = ? AND bucket = ?`, objectKey, backend, bucket)
+	case backend != "":
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE object_key = ? AND backend = ?`, objectKey, backend)
+	case bucket != "":
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE object_key = ? AND bucket = ?`, objectKey, bucket)
+	default:
+		res, err = tx.Exec(`DELETE FROM remote_blob_inventory WHERE object_key = ?`, objectKey)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("delete remote blob inventory rows by object key=%q: %w", objectKey, err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("get remote inventory delete row count: %w", err)
+	}
+	return rows, nil
+}
+
+func deleteRemoteBlobInventoryObjectKeyDB(db *sql.DB, backend string, bucket string, objectKey string) (int64, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("start inventory delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := deleteRemoteBlobInventoryObjectKey(tx, backend, bucket, objectKey)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit inventory delete transaction: %w", err)
+	}
+	return rows, nil
+}
+
 func encryptBlobData(plain []byte) (blobCipherPackage, error) {
 	cid := blake3.Sum256(plain)
 	header := buildBlobHeader(cid, int64(len(plain)))
@@ -1178,6 +1668,14 @@ func parseBlobOIDFromRequestPath(path string) (string, error) {
 	return oid, nil
 }
 
+func blobPlainCachePath(rootDir string, cid string) (string, error) {
+	normalized := normalizeDigestHex(cid)
+	if _, err := parseDigestHex32(normalized); err != nil {
+		return "", fmt.Errorf("invalid blob cid %q: %w", cid, err)
+	}
+	return filepath.Join(rootDir, normalized[:2], normalized[2:4], normalized+".blob"), nil
+}
+
 func blobObjectPath(rootDir string, oid string) (string, error) {
 	normalized := normalizeDigestHex(oid)
 	if err := validateBlobOID(normalized); err != nil {
@@ -1228,6 +1726,59 @@ func ensureBlobObject(objectPath string, encoded []byte, expectedCipherHash stri
 		return fmt.Errorf("sync blob object %q: %w", objectPath, err)
 	}
 	return nil
+}
+
+func ensurePlainBlobCacheObject(cachePath string, sourcePath string, plain []byte, expectedCID string, verbose bool) error {
+	if expectedCID == "" {
+		expectedCID = blake3Hex(plain)
+	}
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return fmt.Errorf("create blob cache directory %q: %w", filepath.Dir(cachePath), err)
+	}
+
+	if existing, err := os.ReadFile(cachePath); err == nil {
+		if blake3Hex(existing) != expectedCID {
+			return fmt.Errorf("existing blob cache object %q has mismatched cid", cachePath)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read existing blob cache object %q: %w", cachePath, err)
+	}
+
+	if strings.TrimSpace(sourcePath) != "" {
+		switch err := cloneFileCoWFunc(cachePath, sourcePath); {
+		case err == nil:
+			cloned, readErr := os.ReadFile(cachePath)
+			if readErr != nil {
+				_ = os.Remove(cachePath)
+				if verbose {
+					log.Printf("[blob] reflink verification read failed for %q, falling back to copy: %v", cachePath, readErr)
+				}
+			} else if blake3Hex(cloned) == expectedCID {
+				if verbose {
+					log.Printf("[blob] cached %q via reflink clone", cachePath)
+				}
+				return nil
+			} else {
+				_ = os.Remove(cachePath)
+				if verbose {
+					log.Printf("[blob] reflink verification hash mismatch for %q, falling back to copy", cachePath)
+				}
+			}
+		case stderrors.Is(err, os.ErrExist):
+			// A concurrent writer may have created the file; verify via ensureBlobObject fallback.
+		case stderrors.Is(err, errReflinkUnsupported):
+			if verbose {
+				log.Printf("[blob] reflink clone not available for %q, falling back to copy", cachePath)
+			}
+		default:
+			if verbose {
+				log.Printf("[blob] reflink clone failed for %q, falling back to copy: %v", cachePath, err)
+			}
+		}
+	}
+
+	return ensureBlobObject(cachePath, plain, expectedCID)
 }
 
 func uploadBlobToServer(serverURL string, oid string, encoded []byte) (string, error) {
@@ -1281,4 +1832,39 @@ func fetchBlobFromServer(serverURL string, oid string) ([]byte, string, error) {
 	etag := strings.TrimSpace(resp.Header.Get("ETag"))
 	etag = strings.Trim(etag, "\"")
 	return payload, normalizeDigestHex(etag), nil
+}
+
+func deleteBlobFromServer(serverURL string, oid string) (bool, error) {
+	normalizedOID := normalizeDigestHex(oid)
+	if err := validateBlobOID(normalizedOID); err != nil {
+		return false, err
+	}
+	url := strings.TrimRight(strings.TrimSpace(serverURL), "/") + "/v1/blobs/" + normalizedOID
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("create delete request: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("delete blob %q from %q: %w", normalizedOID, serverURL, err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusOK:
+		removedHeader := strings.TrimSpace(resp.Header.Get("X-Forge-Object-Removed"))
+		if removedHeader == "" {
+			return true, nil
+		}
+		removed, err := strconv.ParseBool(removedHeader)
+		if err != nil {
+			return true, nil
+		}
+		return removed, nil
+	case http.StatusNotFound:
+		return false, nil
+	default:
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+		return false, fmt.Errorf("delete blob %q failed: status=%d body=%s", normalizedOID, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 }

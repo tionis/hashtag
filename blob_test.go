@@ -102,12 +102,47 @@ func TestBlobPutGetAndListCommandsLocal(t *testing.T) {
 		t.Fatalf("run blob ls command: %v", err)
 	}
 
-	resolvedCachePath, err := blobObjectPath(cacheDir, oid)
+	resolvedCachePath, err := blobPlainCachePath(cacheDir, cid)
 	if err != nil {
-		t.Fatalf("resolve cache path for oid: %v", err)
+		t.Fatalf("resolve cache path for cid: %v", err)
 	}
 	if resolvedCachePath != cachePath {
 		t.Fatalf("expected resolved cache path %q, got %q", cachePath, resolvedCachePath)
+	}
+
+	if _, err := parseDigestHex32(oid); err != nil {
+		t.Fatalf("expected oid to be a valid digest: %v", err)
+	}
+}
+
+func TestEnsurePlainBlobCacheObjectFallbackFromUnsupportedClone(t *testing.T) {
+	temp := t.TempDir()
+	cachePath := filepath.Join(temp, "cache", "a.blob")
+	sourcePath := filepath.Join(temp, "source.txt")
+	plain := []byte("fallback-from-unsupported-clone")
+	if err := os.WriteFile(sourcePath, plain, 0o644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	original := cloneFileCoWFunc
+	cloneFileCoWFunc = func(dstPath string, srcPath string) error {
+		return errReflinkUnsupported
+	}
+	defer func() {
+		cloneFileCoWFunc = original
+	}()
+
+	cid := blake3Hex(plain)
+	if err := ensurePlainBlobCacheObject(cachePath, sourcePath, plain, cid, false); err != nil {
+		t.Fatalf("ensure plain blob cache object with fallback: %v", err)
+	}
+
+	got, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache path: %v", err)
+	}
+	if string(got) != string(plain) {
+		t.Fatalf("expected cache content %q, got %q", plain, got)
 	}
 }
 
@@ -172,9 +207,9 @@ func TestBlobPutGetWithHTTPServer(t *testing.T) {
 		t.Fatalf("expected HEAD status %d, got %d", http.StatusOK, headResp.StatusCode)
 	}
 
-	cacheObjectPath, err := blobObjectPath(cacheDir, oid)
+	cacheObjectPath, err := blobPlainCachePath(cacheDir, cid)
 	if err != nil {
-		t.Fatalf("resolve cache object path: %v", err)
+		t.Fatalf("resolve cache object path by cid: %v", err)
 	}
 	if err := os.Remove(cacheObjectPath); err != nil {
 		t.Fatalf("remove cached object to force server fetch: %v", err)
@@ -204,5 +239,145 @@ func TestBlobPutGetWithHTTPServer(t *testing.T) {
 
 	if _, err := os.Stat(cacheObjectPath); err != nil {
 		t.Fatalf("expected fetched blob to be re-cached at %q: %v", cacheObjectPath, err)
+	}
+}
+
+func TestBlobRemoveCommandLocalByOID(t *testing.T) {
+	temp := t.TempDir()
+	inputPath := filepath.Join(temp, "input.txt")
+	inputData := []byte("remove-local-by-oid")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", inputPath}); err != nil {
+		t.Fatalf("run blob put command: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+
+	var cid string
+	var oid string
+	if err := db.QueryRow(`SELECT cid, oid FROM blob_map LIMIT 1`).Scan(&cid, &oid); err != nil {
+		t.Fatalf("query blob mapping: %v", err)
+	}
+
+	cachePath, err := blobPlainCachePath(cacheDir, cid)
+	if err != nil {
+		t.Fatalf("resolve cache path: %v", err)
+	}
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("expected cache file before delete: %v", err)
+	}
+
+	if err := runBlobRemoveCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-oid", oid,
+		"-output", "kv",
+	}); err != nil {
+		t.Fatalf("run blob rm command local-only: %v", err)
+	}
+
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("expected cache file to be removed, got err=%v", err)
+	}
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM blob_map"); got != 0 {
+		t.Fatalf("expected 0 blob map rows after local delete, got %d", got)
+	}
+}
+
+func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
+	temp := t.TempDir()
+	serverRoot := filepath.Join(temp, "server-root")
+	serverDBPath := filepath.Join(temp, "server.db")
+	serverDB, err := openBlobDB(serverDBPath)
+	if err != nil {
+		t.Fatalf("open server blob db: %v", err)
+	}
+	defer serverDB.Close()
+
+	srv := httptest.NewServer(newBlobHTTPHandler(serverRoot, serverDB, "test-http", "bucket-a"))
+	defer srv.Close()
+
+	inputPath := filepath.Join(temp, "input.txt")
+	inputData := []byte("remove-local-and-remote")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	clientDBPath := filepath.Join(temp, "client.db")
+	cacheDir := filepath.Join(temp, "cache")
+	if err := runBlobPutCommand([]string{
+		"-db", clientDBPath,
+		"-cache", cacheDir,
+		"-server", srv.URL,
+		"-backend", "test-http",
+		"-bucket", "bucket-a",
+		"-output", "kv",
+		inputPath,
+	}); err != nil {
+		t.Fatalf("run blob put command with server: %v", err)
+	}
+
+	clientDB, err := sql.Open("sqlite", clientDBPath)
+	if err != nil {
+		t.Fatalf("open client sqlite db: %v", err)
+	}
+	defer clientDB.Close()
+
+	var cid string
+	var oid string
+	if err := clientDB.QueryRow(`SELECT cid, oid FROM blob_map LIMIT 1`).Scan(&cid, &oid); err != nil {
+		t.Fatalf("query blob map row: %v", err)
+	}
+
+	cachePath, err := blobPlainCachePath(cacheDir, cid)
+	if err != nil {
+		t.Fatalf("resolve plaintext cache path: %v", err)
+	}
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("expected plaintext cache file before delete: %v", err)
+	}
+
+	if err := runBlobRemoveCommand([]string{
+		"-db", clientDBPath,
+		"-cache", cacheDir,
+		"-server", srv.URL,
+		"-backend", "test-http",
+		"-bucket", "bucket-a",
+		"-cid", cid,
+		"-remote",
+		"-output", "kv",
+	}); err != nil {
+		t.Fatalf("run blob rm command local+remote: %v", err)
+	}
+
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Fatalf("expected local cache file removed, got err=%v", err)
+	}
+	if got := mustCount(t, clientDB, "SELECT COUNT(*) FROM blob_map"); got != 0 {
+		t.Fatalf("expected client blob map to be empty after delete, got %d", got)
+	}
+	if got := mustCount(t, clientDB, "SELECT COUNT(*) FROM remote_blob_inventory"); got != 0 {
+		t.Fatalf("expected client remote inventory to be empty after delete, got %d", got)
+	}
+
+	headResp, err := http.Head(strings.TrimRight(srv.URL, "/") + "/v1/blobs/" + oid)
+	if err != nil {
+		t.Fatalf("HEAD blob object after delete: %v", err)
+	}
+	headResp.Body.Close()
+	if headResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected HEAD status %d after delete, got %d", http.StatusNotFound, headResp.StatusCode)
+	}
+	if got := mustCount(t, serverDB, "SELECT COUNT(*) FROM remote_blob_inventory"); got != 0 {
+		t.Fatalf("expected server inventory row to be deleted, got %d", got)
 	}
 }

@@ -236,7 +236,7 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 func newBlobCommand() *cobra.Command {
 	blobCmd := &cobra.Command{
 		Use:                "blob",
-		Short:              "Manage encrypted convergent blob storage and cache.",
+		Short:              "Manage convergent blobs with plaintext local cache and encrypted remote storage.",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
@@ -273,6 +273,15 @@ func newBlobCommand() *cobra.Command {
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runBlobServeCommand(args)
+		},
+	})
+	blobCmd.AddCommand(&cobra.Command{
+		Use:                "rm [options]",
+		Aliases:            []string{"delete", "del"},
+		Short:              "Remove blob data from local cache and optionally remote backend.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobRemoveCommand(args)
 		},
 	})
 

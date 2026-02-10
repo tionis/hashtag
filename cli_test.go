@@ -82,6 +82,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"blob", "serve"}); err != nil {
 		t.Fatalf("expected blob serve command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"blob", "rm"}); err != nil {
+		t.Fatalf("expected blob rm command to be registered: %v", err)
+	}
 }
 
 func TestResolveCLIExitCode(t *testing.T) {

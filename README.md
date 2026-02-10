@@ -226,6 +226,14 @@ List known local blob mappings:
 forge blob ls [flags]
 ```
 
+Remove blob data:
+
+```bash
+forge blob rm [flags] -cid <cid>
+# or
+forge blob rm [flags] -oid <oid>
+```
+
 Run a minimal HTTP blob backend:
 
 ```bash
@@ -234,22 +242,26 @@ forge blob serve [flags]
 
 Blob flags:
 - `-db`: blob metadata DB path (default from `${FORGE_BLOB_DB}` or `${XDG_DATA_HOME}/forge/blob.db`)
-- `-cache`: local encrypted blob cache dir (default from `${FORGE_BLOB_CACHE}` or `${XDG_CACHE_HOME}/forge/blobs`)
+- `-cache`: local plaintext blob cache dir (default from `${FORGE_BLOB_CACHE}` or `${XDG_CACHE_HOME}/forge/blobs`)
 - `-server`: optional blob backend base URL (for `put` upload and `get` cache-miss fetch)
-- `-backend`: backend name used in `remote_blob_inventory` rows (default `blob-http`)
-- `-bucket`: bucket/group label used in `remote_blob_inventory` rows (default `default`)
-- `-cid`: cleartext BLAKE3 content hash selector for `blob get`
-- `-oid`: encrypted object ID selector for `blob get`
+- `-backend`: backend name used in `remote_blob_inventory` rows for put/get (default `blob-http`), or optional filter for `blob rm`
+- `-bucket`: bucket/group label used in `remote_blob_inventory` rows for put/get (default `default`), or optional filter for `blob rm`
+- `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
+- `-oid`: encrypted object ID selector for `blob get`/`blob rm`
 - `-out`: output plaintext path for `blob get` (required)
+- `-local`: local cache + `blob_map` deletion toggle for `blob rm` (default `true`)
+- `-remote`: remote encrypted object + inventory deletion toggle for `blob rm` (default `false`; requires `-server`)
 - `-listen`: HTTP listen address for `blob serve` (default `127.0.0.1:8787`)
 - `-root`: encrypted object root dir for `blob serve`
 - `-limit`: max rows for `blob ls`
-- `-output`: output mode `auto|pretty|kv|json` (put/get/ls)
-- `-v`: verbose output (put/get)
+- `-output`: output mode `auto|pretty|kv|json` (put/get/ls/rm)
+- `-v`: verbose output (put/get/rm)
 
 Blob notes:
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
 - OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
+- Local cache stores plaintext by CID for filesystem-level dedupe; remote payloads are encrypted.
+- Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
