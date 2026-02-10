@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tionis/forge/internal/ingestclient"
 	"github.com/tionis/forge/internal/vectorforge"
@@ -40,20 +41,64 @@ func runVectorServeCommand(args []string) error {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
+	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	cfg, err := vectorforge.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load vector config: %w", err)
 	}
-	if *enableReplication {
-		if err := configureVectorReplicaFromRemoteConfig(context.Background(), &cfg); err != nil {
-			return err
-		}
-	}
-
-	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
+	var lease *vectorWriterLease
+	leaseLost := make(chan error, 1)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return vectorforge.Run(ctx, cfg, logger)
+	runCtx := ctx
+	cancelRun := func() {}
+
+	if *enableReplication {
+		setup, err := configureVectorReplicationFromRemoteConfig(context.Background(), &cfg)
+		if err != nil {
+			return err
+		}
+		lease, err = acquireVectorWriterLease(context.Background(), logger, setup.Bootstrap, setup.Config)
+		if err != nil {
+			return err
+		}
+		replicationCtx, replicationCancel := context.WithCancel(ctx)
+		runCtx = replicationCtx
+		cancelRun = replicationCancel
+		go func() {
+			select {
+			case err := <-lease.Lost():
+				if err != nil {
+					logger.Printf("vector replication writer lease lost: %v", err)
+					select {
+					case leaseLost <- err:
+					default:
+					}
+					replicationCancel()
+				}
+			case <-replicationCtx.Done():
+			}
+		}()
+	}
+	defer cancelRun()
+
+	runErr := vectorforge.Run(runCtx, cfg, logger)
+	if lease != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		closeErr := lease.Close(closeCtx)
+		closeCancel()
+		if closeErr != nil && runErr == nil {
+			runErr = fmt.Errorf("close vector writer lease: %w", closeErr)
+		}
+		select {
+		case leaseErr := <-leaseLost:
+			if leaseErr != nil {
+				return fmt.Errorf("vector replication stopped after lease loss: %w", leaseErr)
+			}
+		default:
+		}
+	}
+	return runErr
 }
 
 func runVectorIngestCommand(args []string) error {
@@ -69,31 +114,6 @@ func runVectorIngestCommand(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return ingestclient.Run(ctx, cfg, logger)
-}
-
-func configureVectorReplicaFromRemoteConfig(ctx context.Context, cfg *vectorforge.Config) error {
-	if cfg == nil {
-		return nil
-	}
-	if strings.TrimSpace(os.Getenv(forgeS3BucketEnv)) == "" {
-		return nil
-	}
-
-	bootstrap, err := loadRemoteS3BootstrapFromEnv()
-	if err != nil {
-		return fmt.Errorf("load remote bootstrap for vector replication: %w", err)
-	}
-	remoteCfg, _, err := loadRemoteGlobalConfigWithCache(ctx, bootstrap, nil)
-	if err != nil {
-		return fmt.Errorf("load remote config for vector replication: %w", err)
-	}
-
-	replicaURL, err := buildVectorReplicaURL(bootstrap, remoteCfg)
-	if err != nil {
-		return err
-	}
-	cfg.ReplicaURL = replicaURL
-	return nil
 }
 
 func buildVectorReplicaURL(bootstrap remoteS3Bootstrap, cfg remoteGlobalConfig) (string, error) {

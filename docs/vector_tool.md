@@ -45,7 +45,7 @@ Replication:
 - Requires remote bootstrap env (`FORGE_S3_BUCKET` and related S3 env used by `forge remote config`).
 - Replica target path is derived as `<object_prefix>/vector/embeddings`.
 - On startup, if replication is enabled and local embeddings DB is missing, restore is attempted first.
-- Replicated mode should be guarded by a writer lease/fencing mechanism to avoid multi-writer overwrite scenarios.
+- Replicated mode acquires and renews an S3-backed writer lease; on lease loss, service write path is stopped to avoid multi-writer overwrite scenarios.
 
 ## Client: `forge vector ingest`
 
