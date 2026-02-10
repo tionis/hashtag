@@ -83,6 +83,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSnapshotCommand())
 	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newTagsCommand())
+	root.AddCommand(newRemoteCommand())
 	root.AddCommand(newBlobCommand())
 	root.AddCommand(newCompletionCommand(root))
 	return root
@@ -268,14 +269,6 @@ func newBlobCommand() *cobra.Command {
 		},
 	})
 	blobCmd.AddCommand(&cobra.Command{
-		Use:                "serve [options]",
-		Short:              "Run a minimal HTTP blob backend for encrypted blobs.",
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBlobServeCommand(args)
-		},
-	})
-	blobCmd.AddCommand(&cobra.Command{
 		Use:                "rm [options]",
 		Aliases:            []string{"delete", "del"},
 		Short:              "Remove blob data from local cache and optionally remote backend.",
@@ -286,6 +279,46 @@ func newBlobCommand() *cobra.Command {
 	})
 
 	return blobCmd
+}
+
+func newRemoteCommand() *cobra.Command {
+	remoteCmd := &cobra.Command{
+		Use:                "remote",
+		Short:              "Manage global remote backend configuration.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	configCmd := &cobra.Command{
+		Use:                "config",
+		Short:              "Manage global remote config object in S3.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	configCmd.AddCommand(&cobra.Command{
+		Use:                "init [options]",
+		Short:              "Initialize or update the global remote config object.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigInitCommand(args)
+		},
+	})
+	configCmd.AddCommand(&cobra.Command{
+		Use:                "show [options]",
+		Short:              "Show the global remote config object.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigShowCommand(args)
+		},
+	})
+	remoteCmd.AddCommand(configCmd)
+
+	return remoteCmd
 }
 
 func newTagsCommand() *cobra.Command {

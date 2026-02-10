@@ -2,15 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
 	stderrors "errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,12 +22,10 @@ import (
 )
 
 const (
-	blobDBEnv            = "FORGE_BLOB_DB"
-	blobCacheEnv         = "FORGE_BLOB_CACHE"
-	blobServerRootEnv    = "FORGE_BLOB_SERVER_ROOT"
-	blobDBDefaultFile    = "blob.db"
-	blobServerDefaultDir = "blob-server"
-	blobCacheDefaultDir  = "blobs"
+	blobDBEnv           = "FORGE_BLOB_DB"
+	blobCacheEnv        = "FORGE_BLOB_CACHE"
+	blobDBDefaultFile   = "blob.db"
+	blobCacheDefaultDir = "blobs"
 
 	blobEncAlgorithm = "xchacha20poly1305"
 	blobEncVersion   = 1
@@ -38,12 +35,13 @@ const (
 	blobDigestBytes   = 32
 	blobHeaderLen     = len(blobMagic) + 1 + 8 + blobDigestBytes
 
-	blobRemoteBackendDefault = "blob-http"
+	blobRemoteBackendDefault = defaultS3BackendName
 	blobRemoteBucketDefault  = "default"
 )
 
 var errReflinkUnsupported = stderrors.New("copy-on-write clone not supported")
 var cloneFileCoWFunc = cloneFileCoW
+var openBlobRemoteStoreFunc = openConfiguredBlobRemoteStore
 
 type blobCipherPackage struct {
 	CID        string
@@ -63,7 +61,9 @@ type blobPutOutput struct {
 	CipherHash string `json:"cipher_hash"`
 	CachePath  string `json:"cache_path"`
 	Uploaded   bool   `json:"uploaded"`
-	Server     string `json:"server,omitempty"`
+	Remote     bool   `json:"remote"`
+	Backend    string `json:"backend,omitempty"`
+	Bucket     string `json:"bucket,omitempty"`
 }
 
 type blobGetOutput struct {
@@ -87,7 +87,8 @@ type blobRemoveOutput struct {
 	RemoteRemoved      bool   `json:"remote_removed"`
 	BlobMapRowsDeleted int64  `json:"blob_map_rows_deleted"`
 	InventoryRowsDel   int64  `json:"inventory_rows_deleted"`
-	Server             string `json:"server,omitempty"`
+	Backend            string `json:"backend,omitempty"`
+	Bucket             string `json:"bucket,omitempty"`
 }
 
 type blobListEntryOutput struct {
@@ -136,16 +137,14 @@ func runBlobPutCommand(args []string) error {
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s blob put [options] <path>\n\n", os.Args[0])
-		fmt.Fprintln(fs.Output(), "Cache a plaintext blob locally and optionally upload encrypted blob payload to a backend.")
+		fmt.Fprintln(fs.Output(), "Cache a plaintext blob locally and optionally upload encrypted blob payload to configured remote S3.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
 	}
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
-	serverURL := fs.String("server", "", "Optional blob backend server base URL")
-	backend := fs.String("backend", blobRemoteBackendDefault, "Inventory backend name when server upload is used")
-	bucket := fs.String("bucket", blobRemoteBucketDefault, "Inventory bucket name when server upload is used")
+	remoteUpload := fs.Bool("remote", false, "Upload encrypted blob payload to configured remote S3")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	verbose := fs.Bool("v", false, "Verbose output")
 	if err := fs.Parse(args); err != nil {
@@ -216,7 +215,17 @@ func runBlobPutCommand(args []string) error {
 	}
 
 	uploaded := false
-	if strings.TrimSpace(*serverURL) != "" {
+	remoteBackend := ""
+	remoteBucket := ""
+	if *remoteUpload {
+		ctx := context.Background()
+		remoteStore, err := openBlobRemoteStoreFunc(ctx)
+		if err != nil {
+			return err
+		}
+		remoteBackend = remoteStore.BackendName()
+		remoteBucket = remoteStore.BucketName()
+
 		pkg, err := encryptBlobData(plain)
 		if err != nil {
 			return err
@@ -240,9 +249,9 @@ func runBlobPutCommand(args []string) error {
 		}
 
 		if *verbose {
-			log.Printf("[blob] uploading %s to %s", oid, *serverURL)
+			log.Printf("[blob] uploading %s to %s://%s", oid, remoteBackend, remoteBucket)
 		}
-		etag, err := uploadBlobToServer(*serverURL, oid, pkg.Encoded)
+		etag, err := remoteStore.PutBlob(ctx, oid, pkg.Encoded)
 		if err != nil {
 			return err
 		}
@@ -251,8 +260,8 @@ func runBlobPutCommand(args []string) error {
 		}
 		scanID := fmt.Sprintf("blob-put-%d", time.Now().UTC().UnixNano())
 		if err := upsertRemoteBlobInventory(tx, blobRemoteInventoryRow{
-			Backend:    strings.TrimSpace(*backend),
-			Bucket:     strings.TrimSpace(*bucket),
+			Backend:    remoteBackend,
+			Bucket:     remoteBucket,
 			ObjectKey:  oid,
 			OID:        oid,
 			Size:       cipherSize,
@@ -281,7 +290,9 @@ func runBlobPutCommand(args []string) error {
 			CipherHash: cipherHash,
 			CachePath:  cachePath,
 			Uploaded:   uploaded,
-			Server:     strings.TrimSpace(*serverURL),
+			Remote:     *remoteUpload,
+			Backend:    remoteBackend,
+			Bucket:     remoteBucket,
 		},
 	)
 }
@@ -294,16 +305,14 @@ func runBlobGetCommand(args []string) error {
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s blob get [options]\n\n", os.Args[0])
-		fmt.Fprintln(fs.Output(), "Read a plaintext blob from local cache, or fetch encrypted data from backend and decrypt to -out.")
+		fmt.Fprintln(fs.Output(), "Read a plaintext blob from local cache, or fetch encrypted data from configured remote S3 and decrypt to -out.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
 	}
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
-	serverURL := fs.String("server", "", "Optional blob backend server base URL")
-	backend := fs.String("backend", blobRemoteBackendDefault, "Inventory backend name when server fetch is used")
-	bucket := fs.String("bucket", blobRemoteBucketDefault, "Inventory bucket name when server fetch is used")
+	remoteFetch := fs.Bool("remote", false, "Fetch encrypted blob from configured remote S3 when local cache misses")
 	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
 	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
 	outPath := fs.String("out", "", "Output plaintext file path")
@@ -392,6 +401,8 @@ func runBlobGetCommand(args []string) error {
 	etag := ""
 	cachePath := ""
 	cacheHit := false
+	remoteBackend := ""
+	remoteBucket := ""
 
 	if requestedCID != "" {
 		cachePath, err = blobPlainCachePath(*cacheDir, requestedCID)
@@ -421,16 +432,27 @@ func runBlobGetCommand(args []string) error {
 		}
 	}
 
-	if !cacheHit && strings.TrimSpace(*serverURL) != "" {
+	if !cacheHit && *remoteFetch {
 		if requestedOID == "" {
-			return fmt.Errorf("cannot fetch from server without oid")
+			return fmt.Errorf("cannot fetch from remote without oid")
 		}
-		if *verbose {
-			log.Printf("[blob] cache miss for %s, fetching from %s", requestedOID, *serverURL)
-		}
-		encoded, fetchedETag, err := fetchBlobFromServer(*serverURL, requestedOID)
+		ctx := context.Background()
+		remoteStore, err := openBlobRemoteStoreFunc(ctx)
 		if err != nil {
 			return err
+		}
+		remoteBackend = remoteStore.BackendName()
+		remoteBucket = remoteStore.BucketName()
+
+		if *verbose {
+			log.Printf("[blob] cache miss for %s, fetching from %s://%s", requestedOID, remoteBackend, remoteBucket)
+		}
+		encoded, fetchedETag, found, err := remoteStore.GetBlob(ctx, requestedOID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("blob %q not found on remote %s://%s", requestedOID, remoteBackend, remoteBucket)
 		}
 		decodedPkg, decodedPlain, err := decodeAndDecryptBlobData(encoded)
 		if err != nil {
@@ -454,14 +476,14 @@ func runBlobGetCommand(args []string) error {
 		if err := ensureBlobObject(cachePath, plain, requestedCID); err != nil {
 			return err
 		}
-		source = "server"
+		source = "remote"
 		cacheHit = true
 	}
 	if !cacheHit {
 		if requestedCID != "" {
-			return fmt.Errorf("blob %q not found in local cache and no -server provided", requestedCID)
+			return fmt.Errorf("blob %q not found in local cache and no -remote fetch enabled", requestedCID)
 		}
-		return fmt.Errorf("blob %q not found in metadata/local cache and no -server provided", requestedOID)
+		return fmt.Errorf("blob %q not found in metadata/local cache and no -remote fetch enabled", requestedOID)
 	}
 
 	if pkg.CID == "" {
@@ -507,14 +529,14 @@ func runBlobGetCommand(args []string) error {
 		return err
 	}
 
-	if source == "server" {
+	if source == "remote" {
 		if etag == "" {
 			etag = pkg.CipherHash
 		}
 		scanID := fmt.Sprintf("blob-get-%d", time.Now().UTC().UnixNano())
 		if err := upsertRemoteBlobInventory(tx, blobRemoteInventoryRow{
-			Backend:    strings.TrimSpace(*backend),
-			Bucket:     strings.TrimSpace(*bucket),
+			Backend:    remoteBackend,
+			Bucket:     remoteBucket,
 			ObjectKey:  pkg.OID,
 			OID:        pkg.OID,
 			Size:       pkg.CipherSize,
@@ -611,59 +633,6 @@ func runBlobListCommand(args []string) error {
 	})
 }
 
-func runBlobServeCommand(args []string) error {
-	defaultDB := defaultBlobDBPath()
-	defaultRoot := defaultBlobServerRootDir()
-
-	fs := flag.NewFlagSet("blob serve", flag.ContinueOnError)
-	fs.SetOutput(os.Stdout)
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: %s blob serve [options]\n\n", os.Args[0])
-		fmt.Fprintln(fs.Output(), "Run a minimal HTTP server for deterministic encrypted blobs.")
-		fmt.Fprintln(fs.Output(), "\nOptions:")
-		fs.PrintDefaults()
-	}
-
-	listenAddr := fs.String("listen", "127.0.0.1:8787", "HTTP listen address")
-	rootDir := fs.String("root", defaultRoot, "Root directory for stored encrypted blobs")
-	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
-	backend := fs.String("backend", blobRemoteBackendDefault, "Inventory backend name used by this server")
-	bucket := fs.String("bucket", blobRemoteBucketDefault, "Inventory bucket name used by this server")
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return nil
-		}
-		return err
-	}
-
-	if err := os.MkdirAll(*rootDir, 0o755); err != nil {
-		return fmt.Errorf("create blob server root %q: %w", *rootDir, err)
-	}
-
-	absDBPath, err := filepath.Abs(*dbPath)
-	if err != nil {
-		return fmt.Errorf("resolve db path: %w", err)
-	}
-	db, err := openBlobDB(absDBPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
-	handler := newBlobHTTPHandler(*rootDir, db, strings.TrimSpace(*backend), strings.TrimSpace(*bucket))
-	server := &http.Server{
-		Addr:              *listenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	log.Printf("[blob] serving blob backend on %s (root=%s)", *listenAddr, *rootDir)
-	if err := server.ListenAndServe(); err != nil && !stderrors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("blob server failed: %w", err)
-	}
-	return nil
-}
-
 func runBlobRemoveCommand(args []string) error {
 	defaultDB := defaultBlobDBPath()
 	defaultCache := defaultBlobCacheDir()
@@ -672,16 +641,13 @@ func runBlobRemoveCommand(args []string) error {
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s blob rm [options]\n\n", os.Args[0])
-		fmt.Fprintln(fs.Output(), "Remove a blob from local plaintext cache and optionally from a remote encrypted backend.")
+		fmt.Fprintln(fs.Output(), "Remove a blob from local plaintext cache and optionally from configured remote S3.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")
 		fs.PrintDefaults()
 	}
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
-	serverURL := fs.String("server", "", "Blob backend server base URL (required for -remote)")
-	backend := fs.String("backend", "", "Optional inventory backend filter for remote inventory deletion")
-	bucket := fs.String("bucket", "", "Optional inventory bucket filter for remote inventory deletion")
 	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
 	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
 	local := fs.Bool("local", true, "Delete local cached plaintext and local blob mapping metadata")
@@ -722,10 +688,6 @@ func runBlobRemoveCommand(args []string) error {
 		}
 	} else if err := validateBlobOID(requestedOID); err != nil {
 		return fmt.Errorf("parse -oid: %w", err)
-	}
-
-	if *remote && strings.TrimSpace(*serverURL) == "" {
-		return fmt.Errorf("-server is required when -remote is set")
 	}
 
 	absDBPath, err := filepath.Abs(*dbPath)
@@ -778,16 +740,26 @@ func runBlobRemoveCommand(args []string) error {
 	}
 
 	remoteRemoved := false
+	remoteBackend := ""
+	remoteBucket := ""
 	if *remote {
-		remoteRemoved, err = deleteBlobFromServer(*serverURL, requestedOID)
+		ctx := context.Background()
+		remoteStore, err := openBlobRemoteStoreFunc(ctx)
+		if err != nil {
+			return err
+		}
+		remoteBackend = remoteStore.BackendName()
+		remoteBucket = remoteStore.BucketName()
+
+		remoteRemoved, err = remoteStore.DeleteBlob(ctx, requestedOID)
 		if err != nil {
 			return err
 		}
 		if *verbose {
 			if remoteRemoved {
-				log.Printf("[blob] removed remote encrypted object %s from %s", requestedOID, *serverURL)
+				log.Printf("[blob] removed remote encrypted object %s from %s://%s", requestedOID, remoteBackend, remoteBucket)
 			} else {
-				log.Printf("[blob] remote encrypted object %s not found on %s", requestedOID, *serverURL)
+				log.Printf("[blob] remote encrypted object %s not found on %s://%s", requestedOID, remoteBackend, remoteBucket)
 			}
 		}
 	}
@@ -807,7 +779,7 @@ func runBlobRemoveCommand(args []string) error {
 	}
 	inventoryDeleted := int64(0)
 	if *remote {
-		inventoryDeleted, err = deleteRemoteBlobInventoryByOID(tx, strings.TrimSpace(*backend), strings.TrimSpace(*bucket), requestedOID)
+		inventoryDeleted, err = deleteRemoteBlobInventoryByOID(tx, remoteBackend, remoteBucket, requestedOID)
 		if err != nil {
 			return err
 		}
@@ -829,138 +801,10 @@ func runBlobRemoveCommand(args []string) error {
 			RemoteRemoved:      remoteRemoved,
 			BlobMapRowsDeleted: rowsDeleted,
 			InventoryRowsDel:   inventoryDeleted,
-			Server:             strings.TrimSpace(*serverURL),
+			Backend:            remoteBackend,
+			Bucket:             remoteBucket,
 		},
 	)
-}
-
-func newBlobHTTPHandler(rootDir string, db *sql.DB, backend string, bucket string) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("/v1/blobs/", func(w http.ResponseWriter, r *http.Request) {
-		oid, err := parseBlobOIDFromRequestPath(r.URL.Path)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		objectPath, err := blobObjectPath(rootDir, oid)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		switch r.Method {
-		case http.MethodPut:
-			body, err := io.ReadAll(r.Body)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("read request body: %v", err), http.StatusBadRequest)
-				return
-			}
-			pkg, err := inspectCipherBlobData(body)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if pkg.OID != oid {
-				http.Error(w, "oid does not match encrypted blob payload", http.StatusBadRequest)
-				return
-			}
-
-			created := false
-			if _, statErr := os.Stat(objectPath); statErr == nil {
-				existing, readErr := os.ReadFile(objectPath)
-				if readErr != nil {
-					http.Error(w, fmt.Sprintf("read existing blob: %v", readErr), http.StatusInternalServerError)
-					return
-				}
-				if blake3Hex(existing) != pkg.CipherHash {
-					http.Error(w, "existing blob data hash mismatch", http.StatusConflict)
-					return
-				}
-			} else if os.IsNotExist(statErr) {
-				if err := ensureBlobObject(objectPath, body, pkg.CipherHash); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				created = true
-			} else {
-				http.Error(w, fmt.Sprintf("stat blob object: %v", statErr), http.StatusInternalServerError)
-				return
-			}
-
-			if err := upsertRemoteBlobInventoryDB(db, blobRemoteInventoryRow{
-				Backend:    backend,
-				Bucket:     bucket,
-				ObjectKey:  oid,
-				OID:        oid,
-				Size:       pkg.CipherSize,
-				ETag:       pkg.CipherHash,
-				CipherHash: pkg.CipherHash,
-				LastSeenNS: time.Now().UTC().UnixNano(),
-				ScanID:     fmt.Sprintf("serve-put-%d", time.Now().UTC().UnixNano()),
-			}); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			w.Header().Set("ETag", fmt.Sprintf("\"%s\"", pkg.CipherHash))
-			w.Header().Set("Content-Type", "application/octet-stream")
-			if created {
-				w.WriteHeader(http.StatusCreated)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-		case http.MethodDelete:
-			objectRemoved := false
-			if err := os.Remove(objectPath); err != nil {
-				if !os.IsNotExist(err) {
-					http.Error(w, fmt.Sprintf("remove blob object: %v", err), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				objectRemoved = true
-			}
-			inventoryDeleted, err := deleteRemoteBlobInventoryObjectKeyDB(db, backend, bucket, oid)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			w.Header().Set("X-Forge-Object-Removed", strconv.FormatBool(objectRemoved))
-			w.Header().Set("X-Forge-Inventory-Deleted", strconv.FormatInt(inventoryDeleted, 10))
-			w.WriteHeader(http.StatusNoContent)
-		case http.MethodHead, http.MethodGet:
-			data, err := os.ReadFile(objectPath)
-			if err != nil {
-				if os.IsNotExist(err) {
-					http.Error(w, "blob not found", http.StatusNotFound)
-					return
-				}
-				http.Error(w, fmt.Sprintf("read blob object: %v", err), http.StatusInternalServerError)
-				return
-			}
-			cipherHash := blake3Hex(data)
-			w.Header().Set("ETag", fmt.Sprintf("\"%s\"", cipherHash))
-			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-			if r.Method == http.MethodHead {
-				w.WriteHeader(http.StatusOK)
-				return
-			}
-			_, _ = w.Write(data)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
-	return mux
 }
 
 func renderBlobPutOutput(mode string, output blobPutOutput) error {
@@ -974,8 +818,12 @@ func renderBlobPutOutput(mode string, output blobPutOutput) error {
 		fmt.Printf("cipher_hash=%s\n", output.CipherHash)
 		fmt.Printf("cache_path=%s\n", output.CachePath)
 		fmt.Printf("uploaded=%t\n", output.Uploaded)
-		if output.Server != "" {
-			fmt.Printf("server=%s\n", output.Server)
+		fmt.Printf("remote=%t\n", output.Remote)
+		if output.Backend != "" {
+			fmt.Printf("backend=%s\n", output.Backend)
+		}
+		if output.Bucket != "" {
+			fmt.Printf("bucket=%s\n", output.Bucket)
 		}
 		return nil
 	case outputModeJSON:
@@ -991,7 +839,9 @@ func renderBlobPutOutput(mode string, output blobPutOutput) error {
 			{Label: "Cipher Hash", Value: output.CipherHash},
 			{Label: "Cache Path", Value: output.CachePath},
 			{Label: "Uploaded", Value: strconv.FormatBool(output.Uploaded)},
-			{Label: "Server", Value: output.Server},
+			{Label: "Remote", Value: strconv.FormatBool(output.Remote)},
+			{Label: "Backend", Value: output.Backend},
+			{Label: "Bucket", Value: output.Bucket},
 		})
 		return nil
 	default:
@@ -1043,8 +893,11 @@ func renderBlobRemoveOutput(mode string, output blobRemoveOutput) error {
 		fmt.Printf("remote_removed=%t\n", output.RemoteRemoved)
 		fmt.Printf("blob_map_rows_deleted=%d\n", output.BlobMapRowsDeleted)
 		fmt.Printf("inventory_rows_deleted=%d\n", output.InventoryRowsDel)
-		if output.Server != "" {
-			fmt.Printf("server=%s\n", output.Server)
+		if output.Backend != "" {
+			fmt.Printf("backend=%s\n", output.Backend)
+		}
+		if output.Bucket != "" {
+			fmt.Printf("bucket=%s\n", output.Bucket)
 		}
 		return nil
 	case outputModeJSON:
@@ -1061,7 +914,8 @@ func renderBlobRemoveOutput(mode string, output blobRemoveOutput) error {
 			{Label: "Remote Removed", Value: strconv.FormatBool(output.RemoteRemoved)},
 			{Label: "Blob Map Rows Deleted", Value: strconv.FormatInt(output.BlobMapRowsDeleted, 10)},
 			{Label: "Inventory Rows Deleted", Value: strconv.FormatInt(output.InventoryRowsDel, 10)},
-			{Label: "Server", Value: output.Server},
+			{Label: "Backend", Value: output.Backend},
+			{Label: "Bucket", Value: output.Bucket},
 		})
 		return nil
 	default:
@@ -1137,21 +991,6 @@ func defaultBlobCacheDir() string {
 		cacheHome = filepath.Join(home, ".cache")
 	}
 	return filepath.Join(cacheHome, snapshotDBDirName, blobCacheDefaultDir)
-}
-
-func defaultBlobServerRootDir() string {
-	if custom := strings.TrimSpace(os.Getenv(blobServerRootEnv)); custom != "" {
-		return custom
-	}
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if strings.TrimSpace(dataHome) == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(snapshotDBDirName, blobServerDefaultDir)
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dataHome, snapshotDBDirName, blobServerDefaultDir)
 }
 
 func openBlobDB(path string) (*sql.DB, error) {
@@ -1652,36 +1491,12 @@ func validateBlobOID(oid string) error {
 	return nil
 }
 
-func parseBlobOIDFromRequestPath(path string) (string, error) {
-	const prefix = "/v1/blobs/"
-	if !strings.HasPrefix(path, prefix) {
-		return "", fmt.Errorf("unexpected blob path")
-	}
-	oid := strings.TrimSpace(strings.TrimPrefix(path, prefix))
-	if oid == "" || strings.Contains(oid, "/") {
-		return "", fmt.Errorf("blob oid is required in path")
-	}
-	oid = normalizeDigestHex(oid)
-	if err := validateBlobOID(oid); err != nil {
-		return "", err
-	}
-	return oid, nil
-}
-
 func blobPlainCachePath(rootDir string, cid string) (string, error) {
 	normalized := normalizeDigestHex(cid)
 	if _, err := parseDigestHex32(normalized); err != nil {
 		return "", fmt.Errorf("invalid blob cid %q: %w", cid, err)
 	}
 	return filepath.Join(rootDir, normalized[:2], normalized[2:4], normalized+".blob"), nil
-}
-
-func blobObjectPath(rootDir string, oid string) (string, error) {
-	normalized := normalizeDigestHex(oid)
-	if err := validateBlobOID(normalized); err != nil {
-		return "", err
-	}
-	return filepath.Join(rootDir, normalized[:2], normalized[2:4], normalized+".fblob"), nil
 }
 
 func ensureBlobObject(objectPath string, encoded []byte, expectedCipherHash string) error {
@@ -1779,92 +1594,4 @@ func ensurePlainBlobCacheObject(cachePath string, sourcePath string, plain []byt
 	}
 
 	return ensureBlobObject(cachePath, plain, expectedCID)
-}
-
-func uploadBlobToServer(serverURL string, oid string, encoded []byte) (string, error) {
-	normalizedOID := normalizeDigestHex(oid)
-	if err := validateBlobOID(normalizedOID); err != nil {
-		return "", err
-	}
-	url := strings.TrimRight(strings.TrimSpace(serverURL), "/") + "/v1/blobs/" + normalizedOID
-	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(encoded))
-	if err != nil {
-		return "", fmt.Errorf("create upload request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/octet-stream")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("upload blob %q to %q: %w", normalizedOID, serverURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return "", fmt.Errorf("upload blob %q failed: status=%d body=%s", normalizedOID, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	etag := strings.TrimSpace(resp.Header.Get("ETag"))
-	etag = strings.Trim(etag, "\"")
-	return normalizeDigestHex(etag), nil
-}
-
-func fetchBlobFromServer(serverURL string, oid string) ([]byte, string, error) {
-	normalizedOID := normalizeDigestHex(oid)
-	if err := validateBlobOID(normalizedOID); err != nil {
-		return nil, "", err
-	}
-	url := strings.TrimRight(strings.TrimSpace(serverURL), "/") + "/v1/blobs/" + normalizedOID
-	resp, err := http.Get(url)
-	if err != nil {
-		return nil, "", fmt.Errorf("fetch blob %q from %q: %w", normalizedOID, serverURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return nil, "", fmt.Errorf("fetch blob %q failed: status=%d body=%s", normalizedOID, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	payload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, "", fmt.Errorf("read blob response for %q: %w", normalizedOID, err)
-	}
-	etag := strings.TrimSpace(resp.Header.Get("ETag"))
-	etag = strings.Trim(etag, "\"")
-	return payload, normalizeDigestHex(etag), nil
-}
-
-func deleteBlobFromServer(serverURL string, oid string) (bool, error) {
-	normalizedOID := normalizeDigestHex(oid)
-	if err := validateBlobOID(normalizedOID); err != nil {
-		return false, err
-	}
-	url := strings.TrimRight(strings.TrimSpace(serverURL), "/") + "/v1/blobs/" + normalizedOID
-	req, err := http.NewRequest(http.MethodDelete, url, nil)
-	if err != nil {
-		return false, fmt.Errorf("create delete request: %w", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false, fmt.Errorf("delete blob %q from %q: %w", normalizedOID, serverURL, err)
-	}
-	defer resp.Body.Close()
-
-	switch resp.StatusCode {
-	case http.StatusNoContent, http.StatusOK:
-		removedHeader := strings.TrimSpace(resp.Header.Get("X-Forge-Object-Removed"))
-		if removedHeader == "" {
-			return true, nil
-		}
-		removed, err := strconv.ParseBool(removedHeader)
-		if err != nil {
-			return true, nil
-		}
-		return removed, nil
-	case http.StatusNotFound:
-		return false, nil
-	default:
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
-		return false, fmt.Errorf("delete blob %q failed: status=%d body=%s", normalizedOID, resp.StatusCode, strings.TrimSpace(string(body)))
-	}
 }

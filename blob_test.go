@@ -1,14 +1,67 @@
 package main
 
 import (
+	"context"
 	"database/sql"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
+
+type fakeBlobRemoteStore struct {
+	backend string
+	bucket  string
+	objects map[string][]byte
+}
+
+func newFakeBlobRemoteStore(backend string, bucket string) *fakeBlobRemoteStore {
+	return &fakeBlobRemoteStore{
+		backend: backend,
+		bucket:  bucket,
+		objects: make(map[string][]byte),
+	}
+}
+
+func (s *fakeBlobRemoteStore) BackendName() string {
+	return s.backend
+}
+
+func (s *fakeBlobRemoteStore) BucketName() string {
+	return s.bucket
+}
+
+func (s *fakeBlobRemoteStore) PutBlob(_ context.Context, oid string, encoded []byte) (string, error) {
+	s.objects[oid] = append([]byte(nil), encoded...)
+	return blake3Hex(encoded), nil
+}
+
+func (s *fakeBlobRemoteStore) GetBlob(_ context.Context, oid string) ([]byte, string, bool, error) {
+	payload, ok := s.objects[oid]
+	if !ok {
+		return nil, "", false, nil
+	}
+	return append([]byte(nil), payload...), blake3Hex(payload), true, nil
+}
+
+func (s *fakeBlobRemoteStore) DeleteBlob(_ context.Context, oid string) (bool, error) {
+	_, ok := s.objects[oid]
+	if ok {
+		delete(s.objects, oid)
+		return true, nil
+	}
+	return false, nil
+}
+
+func withFakeBlobRemoteStore(t *testing.T, store blobRemoteStore) {
+	t.Helper()
+	original := openBlobRemoteStoreFunc
+	openBlobRemoteStoreFunc = func(ctx context.Context) (blobRemoteStore, error) {
+		return store, nil
+	}
+	t.Cleanup(func() {
+		openBlobRemoteStoreFunc = original
+	})
+}
 
 func TestBlobEncryptDecryptDeterministic(t *testing.T) {
 	plain := []byte("forge-blob-deterministic-roundtrip")
@@ -146,21 +199,13 @@ func TestEnsurePlainBlobCacheObjectFallbackFromUnsupportedClone(t *testing.T) {
 	}
 }
 
-func TestBlobPutGetWithHTTPServer(t *testing.T) {
+func TestBlobPutGetWithRemoteStore(t *testing.T) {
 	temp := t.TempDir()
-	serverRoot := filepath.Join(temp, "server-root")
-	serverDBPath := filepath.Join(temp, "server.db")
-	serverDB, err := openBlobDB(serverDBPath)
-	if err != nil {
-		t.Fatalf("open server blob db: %v", err)
-	}
-	defer serverDB.Close()
-
-	srv := httptest.NewServer(newBlobHTTPHandler(serverRoot, serverDB, "test-http", "bucket-a"))
-	defer srv.Close()
+	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
+	withFakeBlobRemoteStore(t, remoteStore)
 
 	inputPath := filepath.Join(temp, "input.txt")
-	inputData := []byte("server-roundtrip-via-cli")
+	inputData := []byte("remote-roundtrip-via-cli")
 	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
 		t.Fatalf("write input file: %v", err)
 	}
@@ -170,13 +215,11 @@ func TestBlobPutGetWithHTTPServer(t *testing.T) {
 	if err := runBlobPutCommand([]string{
 		"-db", clientDBPath,
 		"-cache", cacheDir,
-		"-server", srv.URL,
-		"-backend", "test-http",
-		"-bucket", "bucket-a",
+		"-remote",
 		"-output", "kv",
 		inputPath,
 	}); err != nil {
-		t.Fatalf("run blob put command with server: %v", err)
+		t.Fatalf("run blob put command with remote: %v", err)
 	}
 
 	clientDB, err := sql.Open("sqlite", clientDBPath)
@@ -198,13 +241,8 @@ func TestBlobPutGetWithHTTPServer(t *testing.T) {
 		t.Fatalf("query client blob map: %v", err)
 	}
 
-	headResp, err := http.Head(strings.TrimRight(srv.URL, "/") + "/v1/blobs/" + oid)
-	if err != nil {
-		t.Fatalf("HEAD blob object: %v", err)
-	}
-	headResp.Body.Close()
-	if headResp.StatusCode != http.StatusOK {
-		t.Fatalf("expected HEAD status %d, got %d", http.StatusOK, headResp.StatusCode)
+	if _, exists := remoteStore.objects[oid]; !exists {
+		t.Fatalf("expected remote object %s to be present", oid)
 	}
 
 	cacheObjectPath, err := blobPlainCachePath(cacheDir, cid)
@@ -212,21 +250,19 @@ func TestBlobPutGetWithHTTPServer(t *testing.T) {
 		t.Fatalf("resolve cache object path by cid: %v", err)
 	}
 	if err := os.Remove(cacheObjectPath); err != nil {
-		t.Fatalf("remove cached object to force server fetch: %v", err)
+		t.Fatalf("remove cached object to force remote fetch: %v", err)
 	}
 
 	outPath := filepath.Join(temp, "output.txt")
 	if err := runBlobGetCommand([]string{
 		"-db", clientDBPath,
 		"-cache", cacheDir,
-		"-server", srv.URL,
-		"-backend", "test-http",
-		"-bucket", "bucket-a",
+		"-remote",
 		"-cid", cid,
 		"-out", outPath,
 		"-output", "kv",
 	}); err != nil {
-		t.Fatalf("run blob get command with server fallback: %v", err)
+		t.Fatalf("run blob get command with remote fallback: %v", err)
 	}
 
 	outData, err := os.ReadFile(outPath)
@@ -295,16 +331,8 @@ func TestBlobRemoveCommandLocalByOID(t *testing.T) {
 
 func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 	temp := t.TempDir()
-	serverRoot := filepath.Join(temp, "server-root")
-	serverDBPath := filepath.Join(temp, "server.db")
-	serverDB, err := openBlobDB(serverDBPath)
-	if err != nil {
-		t.Fatalf("open server blob db: %v", err)
-	}
-	defer serverDB.Close()
-
-	srv := httptest.NewServer(newBlobHTTPHandler(serverRoot, serverDB, "test-http", "bucket-a"))
-	defer srv.Close()
+	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
+	withFakeBlobRemoteStore(t, remoteStore)
 
 	inputPath := filepath.Join(temp, "input.txt")
 	inputData := []byte("remove-local-and-remote")
@@ -317,13 +345,11 @@ func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 	if err := runBlobPutCommand([]string{
 		"-db", clientDBPath,
 		"-cache", cacheDir,
-		"-server", srv.URL,
-		"-backend", "test-http",
-		"-bucket", "bucket-a",
+		"-remote",
 		"-output", "kv",
 		inputPath,
 	}); err != nil {
-		t.Fatalf("run blob put command with server: %v", err)
+		t.Fatalf("run blob put command with remote: %v", err)
 	}
 
 	clientDB, err := sql.Open("sqlite", clientDBPath)
@@ -349,9 +375,6 @@ func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 	if err := runBlobRemoveCommand([]string{
 		"-db", clientDBPath,
 		"-cache", cacheDir,
-		"-server", srv.URL,
-		"-backend", "test-http",
-		"-bucket", "bucket-a",
 		"-cid", cid,
 		"-remote",
 		"-output", "kv",
@@ -368,16 +391,7 @@ func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 	if got := mustCount(t, clientDB, "SELECT COUNT(*) FROM remote_blob_inventory"); got != 0 {
 		t.Fatalf("expected client remote inventory to be empty after delete, got %d", got)
 	}
-
-	headResp, err := http.Head(strings.TrimRight(srv.URL, "/") + "/v1/blobs/" + oid)
-	if err != nil {
-		t.Fatalf("HEAD blob object after delete: %v", err)
-	}
-	headResp.Body.Close()
-	if headResp.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected HEAD status %d after delete, got %d", http.StatusNotFound, headResp.StatusCode)
-	}
-	if got := mustCount(t, serverDB, "SELECT COUNT(*) FROM remote_blob_inventory"); got != 0 {
-		t.Fatalf("expected server inventory row to be deleted, got %d", got)
+	if _, exists := remoteStore.objects[oid]; exists {
+		t.Fatalf("expected remote object %s to be deleted", oid)
 	}
 }
