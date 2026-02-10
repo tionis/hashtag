@@ -103,6 +103,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"vector", "ingest"}); err != nil {
 		t.Fatalf("expected vector ingest command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"vector", "lease-status"}); err != nil {
+		t.Fatalf("expected vector lease-status command to be registered: %v", err)
+	}
 }
 
 func TestResolveCLIExitCode(t *testing.T) {

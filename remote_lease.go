@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,7 +27,12 @@ const (
 	vectorLeaseModeOff  = "off"
 
 	vectorLeasePrefix = "leases"
+
+	vectorLeaseAcquireInitialBackoff = 2 * time.Second
+	vectorLeaseAcquireMaxBackoff     = 30 * time.Second
 )
+
+var errVectorLeaseContention = stderrors.New("vector writer lease contention")
 
 type vectorWriterLeaseRecord struct {
 	Schema       string `json:"schema"`
@@ -169,11 +175,49 @@ func acquireVectorWriterLease(ctx context.Context, logger *log.Logger, bootstrap
 		renewComplete: make(chan struct{}),
 		lostCh:        make(chan error, 1),
 	}
-	if err := lease.acquire(ctx); err != nil {
+	if err := lease.acquireWithBackoff(ctx); err != nil {
 		return nil, err
 	}
 	lease.startRenewLoop()
 	return lease, nil
+}
+
+func (l *vectorWriterLease) acquireWithBackoff(ctx context.Context) error {
+	for attempt := 0; ; attempt++ {
+		err := l.acquire(ctx)
+		if err == nil {
+			return nil
+		}
+		if !stderrors.Is(err, errVectorLeaseContention) {
+			return err
+		}
+		delay := vectorLeaseAcquireDelayForAttempt(attempt)
+		l.logf("vector writer lease busy; retrying in %s", delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func vectorLeaseAcquireDelayForAttempt(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := vectorLeaseAcquireInitialBackoff
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if delay >= vectorLeaseAcquireMaxBackoff {
+			return vectorLeaseAcquireMaxBackoff
+		}
+	}
+	if delay > vectorLeaseAcquireMaxBackoff {
+		return vectorLeaseAcquireMaxBackoff
+	}
+	return delay
 }
 
 func (l *vectorWriterLease) Lost() <-chan error {
@@ -284,7 +328,7 @@ func (l *vectorWriterLease) acquire(ctx context.Context) error {
 		return fmt.Errorf("parse existing lease expiry: %w", parseErr)
 	}
 	if expiresAt.After(now) && !strings.EqualFold(current.LeaseID, l.leaseID) {
-		return fmt.Errorf("vector writer lease currently held by %s until %s", current.OwnerID, expiresAt.Format(time.RFC3339))
+		return fmt.Errorf("%w: currently held by %s until %s", errVectorLeaseContention, current.OwnerID, expiresAt.Format(time.RFC3339))
 	}
 
 	match := ""
@@ -294,7 +338,7 @@ func (l *vectorWriterLease) acquire(ctx context.Context) error {
 	nextETag, err := l.putRecord(ctx, record, "", match)
 	if err != nil {
 		if l.mode == vectorLeaseModeHard && isS3PreconditionFailed(err) {
-			return fmt.Errorf("vector writer lease takeover raced with another writer")
+			return fmt.Errorf("%w: takeover raced with another writer", errVectorLeaseContention)
 		}
 		return fmt.Errorf("take over expired vector writer lease: %w", err)
 	}

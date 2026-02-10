@@ -357,6 +357,14 @@ func newVectorCommand() *cobra.Command {
 			return runVectorIngestCommand(args)
 		},
 	})
+	vectorCmd.AddCommand(&cobra.Command{
+		Use:                "lease-status [options]",
+		Short:              "Show remote writer lease state for vector replication.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVectorLeaseStatusCommand(args)
+		},
+	})
 
 	return vectorCmd
 }

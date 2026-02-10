@@ -6,6 +6,7 @@
 
 - `forge vector serve [-replication]`
 - `forge vector ingest [flags]`
+- `forge vector lease-status [options]`
 
 ## Service: `forge vector serve`
 
@@ -47,6 +48,7 @@ Replication:
 - On startup, if replication is enabled and local embeddings DB is missing, restore is attempted first.
 - Replicated mode acquires and renews an S3-backed writer lease; on lease loss, service write path is stopped to avoid multi-writer overwrite scenarios.
 - Lease behavior is configured in remote config under `coordination.vector_writer_lease` (mode/resource/duration/renew interval).
+- `forge vector lease-status` inspects current lease object state (`owner_id`, `lease_id`, expiry, mode) for debugging/fencing visibility.
 
 ## Client: `forge vector ingest`
 
