@@ -286,8 +286,31 @@ func newBlobCommand() *cobra.Command {
 			return runBlobGCCommand(args)
 		},
 	})
+	blobCmd.AddCommand(newBlobRefsCommand())
 
 	return blobCmd
+}
+
+func newBlobRefsCommand() *cobra.Command {
+	refsCmd := &cobra.Command{
+		Use:                "refs",
+		Short:              "Publish node blob reference sets for remote GC workflows.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	refsCmd.AddCommand(&cobra.Command{
+		Use:                "publish [options]",
+		Short:              "Publish this node's live blob references to remote S3.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobRefsPublishCommand(args)
+		},
+	})
+
+	return refsCmd
 }
 
 func newRemoteCommand() *cobra.Command {

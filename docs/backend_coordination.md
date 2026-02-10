@@ -30,6 +30,7 @@ Rationale:
 Status:
 
 - shared remote backend session loading is implemented for vector replication and blob remote store paths
+- node reference-set publishing is implemented via `forge blob refs publish` as a foundation for remote/global blob GC workers
 
 ## Lease/Fencing Without Relay
 

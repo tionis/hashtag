@@ -97,6 +97,12 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"blob", "gc"}); err != nil {
 		t.Fatalf("expected blob gc command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"blob", "refs"}); err != nil {
+		t.Fatalf("expected blob refs command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"blob", "refs", "publish"}); err != nil {
+		t.Fatalf("expected blob refs publish command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"vector", "serve"}); err != nil {
 		t.Fatalf("expected vector serve command to be registered: %v", err)
 	}
