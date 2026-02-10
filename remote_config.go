@@ -35,6 +35,11 @@ const (
 	defaultCapabilityIfNone            = true
 	defaultCapabilityIfMatch           = false
 	defaultCapabilityResponseChecksums = false
+
+	defaultVectorLeaseMode                 = "auto"
+	defaultVectorLeaseResource             = "vector/embeddings-writer"
+	defaultVectorLeaseDurationSeconds      = 45
+	defaultVectorLeaseRenewIntervalSeconds = 15
 )
 
 type remoteS3Bootstrap struct {
@@ -49,12 +54,13 @@ type remoteS3Bootstrap struct {
 }
 
 type remoteGlobalConfig struct {
-	Version   int                  `json:"version"`
-	UpdatedAt string               `json:"updated_at,omitempty"`
-	Cache     remoteGlobalCache    `json:"cache"`
-	Policy    remoteGlobalPolicy   `json:"policy"`
-	S3        remoteGlobalS3Config `json:"s3"`
-	Notes     map[string]string    `json:"notes,omitempty"`
+	Version      int                      `json:"version"`
+	UpdatedAt    string                   `json:"updated_at,omitempty"`
+	Cache        remoteGlobalCache        `json:"cache"`
+	Policy       remoteGlobalPolicy       `json:"policy"`
+	S3           remoteGlobalS3Config     `json:"s3"`
+	Coordination remoteGlobalCoordination `json:"coordination"`
+	Notes        map[string]string        `json:"notes,omitempty"`
 }
 
 type remoteGlobalCache struct {
@@ -76,6 +82,17 @@ type remoteS3Capabilities struct {
 	ConditionalIfNoneMatch bool `json:"conditional_if_none_match"`
 	ConditionalIfMatch     bool `json:"conditional_if_match"`
 	ResponseChecksums      bool `json:"response_checksums"`
+}
+
+type remoteGlobalCoordination struct {
+	VectorWriterLease remoteVectorWriterLeaseConfig `json:"vector_writer_lease"`
+}
+
+type remoteVectorWriterLeaseConfig struct {
+	Mode                 string `json:"mode"`
+	Resource             string `json:"resource"`
+	DurationSeconds      int    `json:"duration_seconds"`
+	RenewIntervalSeconds int    `json:"renew_interval_seconds"`
 }
 
 type remoteConfigInitOutput struct {
@@ -111,6 +128,10 @@ func runRemoteConfigInitCommand(args []string) error {
 	capIfNone := fs.Bool("cap-if-none-match", defaultCapabilityIfNone, "Manual If-None-Match support value (used when -probe-capabilities=false)")
 	capIfMatch := fs.Bool("cap-if-match", defaultCapabilityIfMatch, "Manual If-Match support value (used when -probe-capabilities=false)")
 	capResponseChecksums := fs.Bool("cap-response-checksums", defaultCapabilityResponseChecksums, "Manual response-checksum support value (used when -probe-capabilities=false)")
+	vectorLeaseMode := fs.String("vector-lease-mode", defaultVectorLeaseMode, "Vector writer lease mode: auto|hard|soft|off")
+	vectorLeaseResource := fs.String("vector-lease-resource", defaultVectorLeaseResource, "Vector writer lease resource key")
+	vectorLeaseDuration := fs.Int("vector-lease-duration", defaultVectorLeaseDurationSeconds, "Vector writer lease duration in seconds")
+	vectorLeaseRenewInterval := fs.Int("vector-lease-renew-interval", defaultVectorLeaseRenewIntervalSeconds, "Vector writer lease renew interval in seconds")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -141,6 +162,10 @@ func runRemoteConfigInitCommand(args []string) error {
 	cfg.S3.BlobPrefix = normalizeS3Prefix(*blobPrefix)
 	cfg.Cache.RemoteConfigTTLSeconds = *configCacheTTL
 	cfg.Policy.EncryptNonConfigData = *encryptNonConfig
+	cfg.Coordination.VectorWriterLease.Mode = strings.ToLower(strings.TrimSpace(*vectorLeaseMode))
+	cfg.Coordination.VectorWriterLease.Resource = normalizeS3ObjectKey(*vectorLeaseResource)
+	cfg.Coordination.VectorWriterLease.DurationSeconds = *vectorLeaseDuration
+	cfg.Coordination.VectorWriterLease.RenewIntervalSeconds = *vectorLeaseRenewInterval
 	if *probeCapabilities {
 		caps, err := detectRemoteS3Capabilities(ctx, client, bootstrap)
 		if err != nil {
@@ -282,6 +307,14 @@ func defaultRemoteGlobalConfig() remoteGlobalConfig {
 				ResponseChecksums:      defaultCapabilityResponseChecksums,
 			},
 		},
+		Coordination: remoteGlobalCoordination{
+			VectorWriterLease: remoteVectorWriterLeaseConfig{
+				Mode:                 defaultVectorLeaseMode,
+				Resource:             defaultVectorLeaseResource,
+				DurationSeconds:      defaultVectorLeaseDurationSeconds,
+				RenewIntervalSeconds: defaultVectorLeaseRenewIntervalSeconds,
+			},
+		},
 	}
 }
 
@@ -308,6 +341,32 @@ func normalizeAndValidateRemoteGlobalConfig(cfg *remoteGlobalConfig, bootstrap r
 	}
 	if cfg.Policy.EncryptNonConfigData != true {
 		return fmt.Errorf("remote config policy requires policy.encrypt_non_config_data=true")
+	}
+	lease := &cfg.Coordination.VectorWriterLease
+	lease.Mode = strings.ToLower(strings.TrimSpace(lease.Mode))
+	if lease.Mode == "" {
+		lease.Mode = defaultVectorLeaseMode
+	}
+	switch lease.Mode {
+	case defaultVectorLeaseMode, vectorLeaseModeHard, vectorLeaseModeSoft, vectorLeaseModeOff:
+	default:
+		return fmt.Errorf("unsupported coordination.vector_writer_lease.mode %q (supported: auto|hard|soft|off)", lease.Mode)
+	}
+	if lease.Mode == vectorLeaseModeHard && !(cfg.S3.Capabilities.ConditionalIfNoneMatch && cfg.S3.Capabilities.ConditionalIfMatch) {
+		return fmt.Errorf("coordination.vector_writer_lease.mode=hard requires s3 capabilities conditional_if_none_match=true and conditional_if_match=true")
+	}
+	lease.Resource = normalizeS3ObjectKey(lease.Resource)
+	if lease.Resource == "" {
+		lease.Resource = defaultVectorLeaseResource
+	}
+	if lease.DurationSeconds <= 0 {
+		lease.DurationSeconds = defaultVectorLeaseDurationSeconds
+	}
+	if lease.RenewIntervalSeconds <= 0 {
+		lease.RenewIntervalSeconds = defaultVectorLeaseRenewIntervalSeconds
+	}
+	if lease.RenewIntervalSeconds >= lease.DurationSeconds {
+		return fmt.Errorf("coordination.vector_writer_lease.renew_interval_seconds (%d) must be less than duration_seconds (%d)", lease.RenewIntervalSeconds, lease.DurationSeconds)
 	}
 	return nil
 }

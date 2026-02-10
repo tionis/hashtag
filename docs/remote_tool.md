@@ -22,6 +22,12 @@ You can disable probing and set capability flags manually:
 Set config-cache TTL during init:
 - `-config-cache-ttl=<seconds>`
 
+Set vector writer lease policy during init:
+- `-vector-lease-mode=auto|hard|soft|off`
+- `-vector-lease-resource=<resource-key>`
+- `-vector-lease-duration=<seconds>`
+- `-vector-lease-renew-interval=<seconds>`
+
 ## Bootstrap Environment
 
 Remote config is read/written via S3 using environment bootstrap:
@@ -44,10 +50,11 @@ The object stores global backend capabilities and policy used across tools, incl
 - S3 conditional write support flags
 - Global object prefixes
 - Encryption policy for non-config data
+- Coordination policy (`coordination.vector_writer_lease.*`) for replicated single-writer services
 
 ## Coordination Direction
 
-For replicated single-writer services (for example `forge vector serve -replication`), Forge uses S3-backed writer leases with capability-driven behavior:
+For replicated single-writer services (for example `forge vector serve -replication`), Forge uses S3-backed writer leases from global config (`coordination.vector_writer_lease`) with capability-driven behavior:
 
 - `hard` mode: CAS/fencing with `If-Match` + `If-None-Match`
 - `soft` mode: best-effort advisory lease for weak S3 backends

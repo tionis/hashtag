@@ -20,15 +20,12 @@ import (
 )
 
 const (
+	vectorLeaseModeAuto = "auto"
 	vectorLeaseModeHard = "hard"
 	vectorLeaseModeSoft = "soft"
 	vectorLeaseModeOff  = "off"
 
-	vectorLeaseResourceName = "vector/embeddings-writer"
-	vectorLeasePrefix       = "leases"
-
-	vectorLeaseDuration    = 45 * time.Second
-	vectorLeaseRenewPeriod = 15 * time.Second
+	vectorLeasePrefix = "leases"
 )
 
 type vectorWriterLeaseRecord struct {
@@ -55,6 +52,8 @@ type vectorWriterLease struct {
 	mu            sync.Mutex
 	etag          string
 	expiresAt     time.Time
+	duration      time.Duration
+	renewInterval time.Duration
 	released      bool
 	lostReported  bool
 	renewCancel   context.CancelFunc
@@ -91,14 +90,29 @@ func configureVectorReplicationFromRemoteConfig(ctx context.Context, cfg *vector
 	}, nil
 }
 
-func deriveVectorLeaseMode(caps remoteS3Capabilities) string {
-	if caps.ConditionalIfNoneMatch && caps.ConditionalIfMatch {
-		return vectorLeaseModeHard
+func resolveVectorLeaseMode(mode string, caps remoteS3Capabilities) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		normalized = vectorLeaseModeAuto
 	}
-	if caps.ConditionalIfNoneMatch || caps.ConditionalIfMatch {
-		return vectorLeaseModeSoft
+	switch normalized {
+	case vectorLeaseModeAuto:
+		if caps.ConditionalIfNoneMatch && caps.ConditionalIfMatch {
+			return vectorLeaseModeHard, nil
+		}
+		return vectorLeaseModeSoft, nil
+	case vectorLeaseModeHard:
+		if !(caps.ConditionalIfNoneMatch && caps.ConditionalIfMatch) {
+			return "", fmt.Errorf("hard lease mode requires both conditional_if_none_match and conditional_if_match support")
+		}
+		return vectorLeaseModeHard, nil
+	case vectorLeaseModeSoft:
+		return vectorLeaseModeSoft, nil
+	case vectorLeaseModeOff:
+		return vectorLeaseModeOff, nil
+	default:
+		return "", fmt.Errorf("unsupported lease mode %q", normalized)
 	}
-	return vectorLeaseModeSoft
 }
 
 func vectorWriterLeaseObjectKey(cfg remoteGlobalConfig, resource string) string {
@@ -120,10 +134,26 @@ func defaultVectorLeaseOwnerID() string {
 }
 
 func acquireVectorWriterLease(ctx context.Context, logger *log.Logger, bootstrap remoteS3Bootstrap, cfg remoteGlobalConfig) (*vectorWriterLease, error) {
-	mode := deriveVectorLeaseMode(cfg.S3.Capabilities)
+	mode, err := resolveVectorLeaseMode(cfg.Coordination.VectorWriterLease.Mode, cfg.S3.Capabilities)
+	if err != nil {
+		return nil, err
+	}
 	if mode == vectorLeaseModeOff {
 		return nil, nil
 	}
+	duration := time.Duration(cfg.Coordination.VectorWriterLease.DurationSeconds) * time.Second
+	if duration <= 0 {
+		duration = time.Duration(defaultVectorLeaseDurationSeconds) * time.Second
+	}
+	renewInterval := time.Duration(cfg.Coordination.VectorWriterLease.RenewIntervalSeconds) * time.Second
+	if renewInterval <= 0 {
+		renewInterval = time.Duration(defaultVectorLeaseRenewIntervalSeconds) * time.Second
+	}
+	resource := strings.TrimSpace(cfg.Coordination.VectorWriterLease.Resource)
+	if resource == "" {
+		resource = defaultVectorLeaseResource
+	}
+
 	client, err := newS3ClientFromBootstrapWithResponseChecksumValidation(ctx, bootstrap, responseChecksumValidationForCapabilities(cfg.S3.Capabilities))
 	if err != nil {
 		return nil, err
@@ -133,11 +163,13 @@ func acquireVectorWriterLease(ctx context.Context, logger *log.Logger, bootstrap
 		bootstrap:     bootstrap,
 		capabilities:  cfg.S3.Capabilities,
 		mode:          mode,
-		objectKey:     vectorWriterLeaseObjectKey(cfg, vectorLeaseResourceName),
-		resource:      vectorLeaseResourceName,
+		objectKey:     vectorWriterLeaseObjectKey(cfg, resource),
+		resource:      resource,
 		ownerID:       defaultVectorLeaseOwnerID(),
 		leaseID:       uuid.NewString(),
 		logger:        logger,
+		duration:      duration,
+		renewInterval: renewInterval,
 		renewComplete: make(chan struct{}),
 		lostCh:        make(chan error, 1),
 	}
@@ -187,7 +219,7 @@ func (l *vectorWriterLease) startRenewLoop() {
 
 	go func() {
 		defer close(l.renewComplete)
-		ticker := time.NewTicker(vectorLeaseRenewPeriod)
+		ticker := time.NewTicker(l.renewInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -228,7 +260,7 @@ func (l *vectorWriterLease) acquire(ctx context.Context) error {
 	if l.capabilities.ConditionalIfNoneMatch {
 		etag, err := l.putRecord(ctx, record, "*", "")
 		if err == nil {
-			l.setLeaseState(etag, now.Add(vectorLeaseDuration))
+			l.setLeaseState(etag, now.Add(l.duration))
 			l.logf("lease acquired (mode=%s key=s3://%s/%s)", l.mode, l.bootstrap.Bucket, l.objectKey)
 			return nil
 		}
@@ -246,7 +278,7 @@ func (l *vectorWriterLease) acquire(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("create vector lease object: %w", err)
 		}
-		l.setLeaseState(etag, now.Add(vectorLeaseDuration))
+		l.setLeaseState(etag, now.Add(l.duration))
 		l.logf("lease acquired (mode=%s key=s3://%s/%s)", l.mode, l.bootstrap.Bucket, l.objectKey)
 		return nil
 	}
@@ -270,7 +302,7 @@ func (l *vectorWriterLease) acquire(ctx context.Context) error {
 		}
 		return fmt.Errorf("take over expired vector writer lease: %w", err)
 	}
-	l.setLeaseState(nextETag, now.Add(vectorLeaseDuration))
+	l.setLeaseState(nextETag, now.Add(l.duration))
 	l.logf("lease acquired (mode=%s key=s3://%s/%s)", l.mode, l.bootstrap.Bucket, l.objectKey)
 	return nil
 }
@@ -291,7 +323,7 @@ func (l *vectorWriterLease) renew(ctx context.Context) error {
 			}
 			return fmt.Errorf("renew hard lease: %w", err)
 		}
-		l.setLeaseState(etag, now.Add(vectorLeaseDuration))
+		l.setLeaseState(etag, now.Add(l.duration))
 		return nil
 	}
 
@@ -313,7 +345,7 @@ func (l *vectorWriterLease) renew(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("renew soft lease: %w", err)
 	}
-	l.setLeaseState(etag, now.Add(vectorLeaseDuration))
+	l.setLeaseState(etag, now.Add(l.duration))
 	return nil
 }
 
@@ -411,7 +443,7 @@ func (l *vectorWriterLease) currentETag() string {
 
 func (l *vectorWriterLease) buildRecord(now time.Time) vectorWriterLeaseRecord {
 	issued := now.UTC()
-	expires := issued.Add(vectorLeaseDuration).UTC()
+	expires := issued.Add(l.duration).UTC()
 	return vectorWriterLeaseRecord{
 		Schema:       "forge.vector_writer_lease.v1",
 		Resource:     l.resource,

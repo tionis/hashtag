@@ -45,6 +45,9 @@ func TestNormalizeAndValidateRemoteGlobalConfig(t *testing.T) {
 	cfg.S3.ObjectPrefix = "/forge-data/"
 	cfg.S3.BlobPrefix = "/blob-store/"
 	cfg.Cache.RemoteConfigTTLSeconds = 0
+	cfg.Coordination.VectorWriterLease.Resource = "/vector/lease/"
+	cfg.Coordination.VectorWriterLease.DurationSeconds = 0
+	cfg.Coordination.VectorWriterLease.RenewIntervalSeconds = 0
 	if err := normalizeAndValidateRemoteGlobalConfig(&cfg, bootstrap); err != nil {
 		t.Fatalf("normalize and validate config: %v", err)
 	}
@@ -57,9 +60,44 @@ func TestNormalizeAndValidateRemoteGlobalConfig(t *testing.T) {
 	if cfg.Cache.RemoteConfigTTLSeconds != defaultRemoteConfigCacheTTLSeconds {
 		t.Fatalf("expected default cache ttl %d, got %d", defaultRemoteConfigCacheTTLSeconds, cfg.Cache.RemoteConfigTTLSeconds)
 	}
+	if cfg.Coordination.VectorWriterLease.Resource != "vector/lease" {
+		t.Fatalf("expected normalized lease resource vector/lease, got %q", cfg.Coordination.VectorWriterLease.Resource)
+	}
+	if cfg.Coordination.VectorWriterLease.DurationSeconds != defaultVectorLeaseDurationSeconds {
+		t.Fatalf("expected default lease duration %d, got %d", defaultVectorLeaseDurationSeconds, cfg.Coordination.VectorWriterLease.DurationSeconds)
+	}
+	if cfg.Coordination.VectorWriterLease.RenewIntervalSeconds != defaultVectorLeaseRenewIntervalSeconds {
+		t.Fatalf("expected default lease renew interval %d, got %d", defaultVectorLeaseRenewIntervalSeconds, cfg.Coordination.VectorWriterLease.RenewIntervalSeconds)
+	}
 
 	cfg.Policy.EncryptNonConfigData = false
 	if err := normalizeAndValidateRemoteGlobalConfig(&cfg, bootstrap); err == nil {
 		t.Fatal("expected encryption policy=false to fail validation")
+	}
+}
+
+func TestNormalizeAndValidateRemoteGlobalConfigLeaseValidation(t *testing.T) {
+	bootstrap := remoteS3Bootstrap{
+		Bucket:    "bucket-a",
+		ConfigKey: "forge/config.json",
+	}
+	cfg := defaultRemoteGlobalConfig()
+	cfg.S3.Bucket = "bucket-a"
+	cfg.S3.Capabilities = remoteS3Capabilities{
+		ConditionalIfNoneMatch: true,
+		ConditionalIfMatch:     false,
+	}
+	cfg.Coordination.VectorWriterLease.Mode = vectorLeaseModeHard
+	if err := normalizeAndValidateRemoteGlobalConfig(&cfg, bootstrap); err == nil {
+		t.Fatal("expected hard lease mode validation to fail without full CAS capabilities")
+	}
+
+	cfg = defaultRemoteGlobalConfig()
+	cfg.S3.Bucket = "bucket-a"
+	cfg.Coordination.VectorWriterLease.Mode = vectorLeaseModeSoft
+	cfg.Coordination.VectorWriterLease.DurationSeconds = 10
+	cfg.Coordination.VectorWriterLease.RenewIntervalSeconds = 10
+	if err := normalizeAndValidateRemoteGlobalConfig(&cfg, bootstrap); err == nil {
+		t.Fatal("expected renew interval >= duration to fail validation")
 	}
 }

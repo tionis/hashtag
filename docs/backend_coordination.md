@@ -29,7 +29,7 @@ Rationale:
 
 ## Lease/Fencing Without Relay
 
-When running replicated single-writer services (for example `forge vector serve -replication`), Forge should use an S3-backed lease with capability-driven behavior.
+When running replicated single-writer services (for example `forge vector serve -replication`), Forge uses an S3-backed lease with capability-driven behavior, configured via global remote config (`coordination.vector_writer_lease`).
 
 ### Modes
 

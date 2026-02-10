@@ -46,6 +46,7 @@ Replication:
 - Replica target path is derived as `<object_prefix>/vector/embeddings`.
 - On startup, if replication is enabled and local embeddings DB is missing, restore is attempted first.
 - Replicated mode acquires and renews an S3-backed writer lease; on lease loss, service write path is stopped to avoid multi-writer overwrite scenarios.
+- Lease behavior is configured in remote config under `coordination.vector_writer_lease` (mode/resource/duration/renew interval).
 
 ## Client: `forge vector ingest`
 

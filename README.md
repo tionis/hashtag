@@ -247,6 +247,11 @@ Remote config is loaded from S3 using environment bootstrap:
 
 `forge remote config init` probes and records S3 capability flags by default (`If-None-Match`, `If-Match`, and `response_checksums`). Use `-probe-capabilities=false` with `-cap-if-none-match` / `-cap-if-match` / `-cap-response-checksums` to override manually.
 `forge remote config init -config-cache-ttl <seconds>` sets `cache.remote_config_ttl_seconds`; remote-backed operations use local SQLite cache and refresh from S3 when this TTL expires.
+`forge remote config init` also configures writer-lease policy for replicated services:
+- `-vector-lease-mode auto|hard|soft|off`
+- `-vector-lease-resource <resource-key>`
+- `-vector-lease-duration <seconds>`
+- `-vector-lease-renew-interval <seconds>`
 
 ## Blob Tool
 
