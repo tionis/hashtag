@@ -10,6 +10,7 @@ Current tools:
 - `forge tags`: manage `user.xdg.tags` metadata on files/paths.
 - `forge remote`: global S3 backend configuration shared across Forge features.
 - `forge blob`: deterministic encrypted blob storage with plaintext local cache + optional S3 remote sync.
+- `forge vector`: embedding coordinator service and ingestion client workflows.
 
 ## Install
 
@@ -31,6 +32,7 @@ Top-level commands:
 - `forge tags`
 - `forge remote`
 - `forge blob`
+- `forge vector`
 - `forge completion`
 
 Output mode convention:
@@ -45,6 +47,10 @@ Forge stores local state under XDG paths by default. These env vars override spe
 - `FORGE_BLOB_DB` (default `${XDG_DATA_HOME}/forge/blob.db`, fallback `~/.local/share/forge/blob.db`)
 - `FORGE_BLOB_CACHE` (default `${XDG_CACHE_HOME}/forge/blobs`, fallback `~/.cache/forge/blobs`)
 - `FORGE_REMOTE_DB` (default `${XDG_DATA_HOME}/forge/remote.db`, fallback `~/.local/share/forge/remote.db`)
+- `FORGE_VECTOR_EMBED_DB` (default `${XDG_DATA_HOME}/forge/vector/embeddings.db`, fallback `~/.local/share/forge/vector/embeddings.db`)
+- `FORGE_VECTOR_QUEUE_DB` (default `${XDG_DATA_HOME}/forge/vector/queue.db`, fallback `~/.local/share/forge/vector/queue.db`)
+- `FORGE_VECTOR_TEMP_DIR` (default `${XDG_CACHE_HOME}/forge/vector/tmp`, fallback `~/.cache/forge/vector/tmp`)
+- `FORGE_VECTOR_HYDRATED_DB` (default `${XDG_DATA_HOME}/forge/embeddings.db`, fallback `~/.local/share/forge/embeddings.db`)
 
 ## Hash Tool
 
@@ -264,6 +270,12 @@ List known local blob mappings:
 forge blob ls [flags]
 ```
 
+Garbage collect unreferenced local blob metadata/cache:
+
+```bash
+forge blob gc [flags]
+```
+
 Remove blob data:
 
 ```bash
@@ -284,15 +296,87 @@ Blob flags:
 - `-output`: output mode `auto|pretty|kv|json` (put/get/ls/rm)
 - `-v`: verbose output (put/get/rm)
 
+Blob GC flags:
+- `-db`: blob metadata DB path to collect
+- `-cache`: local blob cache directory to collect
+- `-snapshot-db`: snapshot DB root source (`tree_entries.kind='file'`)
+- `-vector-queue-db`: vector queue DB root source (`jobs.file_path` payload refs)
+- `-include-error-jobs`: include vector `status=error` jobs as roots (default `true`)
+- `-no-snapshot-refs`: disable snapshot roots
+- `-no-vector-refs`: disable vector queue roots
+- `-apply`: apply deletions (default is dry-run)
+- `-output`: output mode `auto|pretty|kv|json`
+- `-v`: verbose output
+
 Blob notes:
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
 - OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
 - Local cache stores plaintext by CID for filesystem-level dedupe; remote payloads are encrypted.
 - Remote objects are written under a deterministic key layout derived from global remote config.
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
+- `blob gc` is local-only and does not remove remote objects.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
+
+## Vector Tool
+
+Run the coordinator service:
+
+```bash
+forge vector serve
+```
+
+Run local ingestion client:
+
+```bash
+forge vector ingest \
+  -server http://localhost:8080 \
+  -root /path/to/files \
+  -kind image \
+  -algo blake3 \
+  -workers 16
+```
+
+`forge vector serve` runtime environment:
+- `LISTEN_ADDR` (default `:8080`)
+- `IMAGE_WORKER_URL` (default `http://localhost:3003`; falls back to `WORKER_URL`)
+- `TEXT_WORKER_URL` (default `IMAGE_WORKER_URL`)
+- `WORKER_CONCURRENCY` (default `20`)
+- `LOOKUP_CHUNK_SIZE` (default `500`)
+- `QUEUE_ACK_TIMEOUT_MS` (default `5000`)
+- `MAX_PENDING_JOBS` (default `5000`)
+- `MAX_JOB_ATTEMPTS` (default `3`)
+- `FORGE_VECTOR_REPLICA_RESTORE_ON_START` (default `true`)
+
+Local vector storage paths use:
+- `FORGE_VECTOR_EMBED_DB`
+- `FORGE_VECTOR_QUEUE_DB`
+- `FORGE_VECTOR_TEMP_DIR`
+
+Vector payload spool storage uses the shared blob store paths:
+- `FORGE_BLOB_DB`
+- `FORGE_BLOB_CACHE`
+
+Replication behavior:
+- By default, `forge vector serve` runs local-only (no replication).
+- Use `forge vector serve -replication` to derive Litestream replica URL from Forge remote config (`forge remote config ...`) and stream to S3.
+
+`forge vector ingest` flags:
+- `-server` coordinator base URL (default `http://localhost:8080`)
+- `-root` local scan root (default `.`)
+- `-kind` embedding kind (`image|text`, default `image`)
+- `-algo` hash algorithm for xattr cache (`blake3`, default `blake3`)
+- `-hydrated-db` hydrated embeddings DB path (default `${XDG_DATA_HOME}/forge/embeddings.db`)
+- `-workers` worker count (default `NumCPU`)
+- `-lookup-batch` hashes per lookup request (default `500`)
+- `-http-timeout` request timeout (default `120s`)
+- `-v` verbose logging
+
+Vector upload queue behavior:
+- Uploads are staged briefly under `FORGE_VECTOR_TEMP_DIR`.
+- Payloads are then stored in local blob cache (`blob_map` + `FORGE_BLOB_CACHE`) and queue records store payload CIDs.
+- Worker reads payload content by CID from blob cache (with legacy file-path fallback for pre-migration queue rows).
 
 ## Tags Tool
 
@@ -321,10 +405,12 @@ Notes:
 - Dupes tool: [`docs/dupes_tool.md`](docs/dupes_tool.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
 - Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
+- Backend coordination: [`docs/backend_coordination.md`](docs/backend_coordination.md)
 - Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tags tool: [`docs/tags_tool.md`](docs/tags_tool.md)
 - Remote tool: [`docs/remote_tool.md`](docs/remote_tool.md)
 - Blob tool: [`docs/blob_tool.md`](docs/blob_tool.md)
+- Vector tool: [`docs/vector_tool.md`](docs/vector_tool.md)
 - Tool rules: [`docs/tool_rules.md`](docs/tool_rules.md)
 - Output modes: [`docs/output_modes.md`](docs/output_modes.md)
 - Adding tools: [`docs/adding_tools.md`](docs/adding_tools.md)

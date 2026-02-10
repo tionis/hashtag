@@ -85,6 +85,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newTagsCommand())
 	root.AddCommand(newRemoteCommand())
 	root.AddCommand(newBlobCommand())
+	root.AddCommand(newVectorCommand())
 	root.AddCommand(newCompletionCommand(root))
 	return root
 }
@@ -277,6 +278,14 @@ func newBlobCommand() *cobra.Command {
 			return runBlobRemoveCommand(args)
 		},
 	})
+	blobCmd.AddCommand(&cobra.Command{
+		Use:                "gc [options]",
+		Short:              "Garbage collect local blob cache/metadata from local reference roots.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobGCCommand(args)
+		},
+	})
 
 	return blobCmd
 }
@@ -319,6 +328,37 @@ func newRemoteCommand() *cobra.Command {
 	remoteCmd.AddCommand(configCmd)
 
 	return remoteCmd
+}
+
+func newVectorCommand() *cobra.Command {
+	vectorCmd := &cobra.Command{
+		Use:                "vector",
+		Short:              "Run vector embedding service and ingestion workflows.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	vectorCmd.AddCommand(&cobra.Command{
+		Use:                "serve",
+		Short:              "Run the VectorForge coordinator service.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVectorServeCommand(args)
+		},
+	})
+
+	vectorCmd.AddCommand(&cobra.Command{
+		Use:                "ingest [options]",
+		Short:              "Scan local files and upload missing embedding jobs.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVectorIngestCommand(args)
+		},
+	})
+
+	return vectorCmd
 }
 
 func newTagsCommand() *cobra.Command {

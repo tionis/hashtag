@@ -8,6 +8,7 @@
 - `forge blob get [options] -cid <cid> -out <path>`
 - `forge blob get [options] -oid <oid> -out <path>`
 - `forge blob ls [options]`
+- `forge blob gc [options]`
 - `forge blob rm [options] -cid <cid>`
 - `forge blob rm [options] -oid <oid>`
 
@@ -20,6 +21,7 @@
 - Remote backend stores encrypted payloads by OID in S3.
 - Local `blob put` attempts a CoW reflink clone into cache first, then falls back to a regular copy.
 - Remote access for `put/get/rm` is enabled with `-remote` and uses global config from `forge remote config`.
+- `blob gc` is local-only and prunes unreferenced `blob_map` rows/cache objects from local GC roots.
 
 ## Metadata Tables
 
@@ -32,7 +34,16 @@
 
 ## Output Modes
 
-`put`, `get`, `ls`, and `rm` support `-output auto|pretty|kv|json`.
+`put`, `get`, `ls`, `gc`, and `rm` support `-output auto|pretty|kv|json`.
+
+## Local GC Roots
+
+`forge blob gc` computes live CIDs from local references:
+
+- Snapshot DB `tree_entries.target_hash` rows where `kind='file'`.
+- Vector queue DB `jobs.file_path` payload refs where status is `pending|processing` (and optionally `error`).
+
+By default `blob gc` is dry-run and only reports a delete plan. Use `-apply` to delete local rows/files.
 
 ## Remote Prerequisite
 

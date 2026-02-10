@@ -107,6 +107,25 @@ type blobListOutput struct {
 	Entries []blobListEntryOutput `json:"entries"`
 }
 
+type blobGCOutput struct {
+	DB                   string `json:"db"`
+	CacheDir             string `json:"cache_dir"`
+	SnapshotDB           string `json:"snapshot_db,omitempty"`
+	VectorQueueDB        string `json:"vector_queue_db,omitempty"`
+	Applied              bool   `json:"applied"`
+	SnapshotRefsEnabled  bool   `json:"snapshot_refs_enabled"`
+	VectorRefsEnabled    bool   `json:"vector_refs_enabled"`
+	SnapshotRefsFound    int    `json:"snapshot_refs_found"`
+	VectorRefsFound      int    `json:"vector_refs_found"`
+	LiveCIDCount         int    `json:"live_cid_count"`
+	BlobMapRowsScanned   int    `json:"blob_map_rows_scanned"`
+	BlobMapDeletePlan    int    `json:"blob_map_delete_plan"`
+	BlobMapRowsDeleted   int64  `json:"blob_map_rows_deleted"`
+	CacheDeletePlan      int    `json:"cache_delete_plan"`
+	CacheFilesDeleted    int    `json:"cache_files_deleted"`
+	CacheDeleteWarnCount int    `json:"cache_delete_warning_count"`
+}
+
 type blobMapRow struct {
 	CID        string
 	OID        string
@@ -807,6 +826,179 @@ func runBlobRemoveCommand(args []string) error {
 	)
 }
 
+func runBlobGCCommand(args []string) error {
+	defaultDB := defaultBlobDBPath()
+	defaultCache := defaultBlobCacheDir()
+	defaultSnapshot := defaultSnapshotDBPath()
+	defaultVectorQueue := defaultVectorQueueDBPathForGC()
+
+	fs := flag.NewFlagSet("blob gc", flag.ContinueOnError)
+	fs.SetOutput(os.Stdout)
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "Usage: %s blob gc [options]\n\n", os.Args[0])
+		fmt.Fprintln(fs.Output(), "Garbage collect local blob cache/metadata based on local references.")
+		fmt.Fprintln(fs.Output(), "Default mode is dry-run; pass -apply to perform deletions.")
+		fmt.Fprintln(fs.Output(), "\nOptions:")
+		fs.PrintDefaults()
+	}
+
+	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
+	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
+	snapshotDBPath := fs.String("snapshot-db", defaultSnapshot, "Path to snapshot database for tree-entry references")
+	vectorQueueDBPath := fs.String("vector-queue-db", defaultVectorQueue, "Path to vector queue database for payload references")
+	noSnapshotRefs := fs.Bool("no-snapshot-refs", false, "Disable snapshot tree-entry references as GC roots")
+	noVectorRefs := fs.Bool("no-vector-refs", false, "Disable vector queue references as GC roots")
+	includeErrorJobs := fs.Bool("include-error-jobs", true, "Treat vector queue status=error jobs as GC roots")
+	apply := fs.Bool("apply", false, "Apply deletions (default is dry-run)")
+	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	verbose := fs.Bool("v", false, "Verbose output")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return nil
+		}
+		return err
+	}
+	if *noSnapshotRefs && *noVectorRefs {
+		return fmt.Errorf("no reference roots enabled; keep at least one of snapshot/vector references")
+	}
+
+	resolvedOutputMode, err := resolvePrettyKVJSONOutputMode(*outputMode)
+	if err != nil {
+		return err
+	}
+
+	absDBPath, err := filepath.Abs(*dbPath)
+	if err != nil {
+		return fmt.Errorf("resolve db path: %w", err)
+	}
+	absCacheDir, err := filepath.Abs(*cacheDir)
+	if err != nil {
+		return fmt.Errorf("resolve cache dir: %w", err)
+	}
+	absSnapshotDBPath, err := filepath.Abs(*snapshotDBPath)
+	if err != nil {
+		return fmt.Errorf("resolve snapshot db path: %w", err)
+	}
+	absVectorQueueDBPath, err := filepath.Abs(*vectorQueueDBPath)
+	if err != nil {
+		return fmt.Errorf("resolve vector queue db path: %w", err)
+	}
+
+	db, err := openBlobDB(absDBPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	live := make(map[string]struct{})
+	snapshotRefs := 0
+	vectorRefs := 0
+	if !*noSnapshotRefs {
+		n, err := collectLiveBlobRefsFromSnapshotDB(absSnapshotDBPath, live)
+		if err != nil {
+			return err
+		}
+		snapshotRefs = n
+	}
+	if !*noVectorRefs {
+		n, err := collectLiveBlobRefsFromVectorQueueDB(absVectorQueueDBPath, *includeErrorJobs, live)
+		if err != nil {
+			return err
+		}
+		vectorRefs = n
+	}
+
+	rows, err := listAllBlobMappings(db)
+	if err != nil {
+		return err
+	}
+
+	deletePlanRows := make([]blobMapRow, 0)
+	for _, row := range rows {
+		if _, ok := live[row.CID]; ok {
+			continue
+		}
+		deletePlanRows = append(deletePlanRows, row)
+		if *verbose {
+			log.Printf("[blob gc] stale blob_map cid=%s oid=%s cache_path=%s", row.CID, row.OID, row.CachePath)
+		}
+	}
+
+	rowsDeleted := int64(0)
+	cacheDeleted := 0
+	cacheDeleteWarnings := 0
+	if *apply && len(deletePlanRows) > 0 {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("start blob gc transaction: %w", err)
+		}
+		defer tx.Rollback()
+
+		for _, row := range deletePlanRows {
+			res, err := tx.Exec(`DELETE FROM blob_map WHERE cid = ?`, row.CID)
+			if err != nil {
+				return fmt.Errorf("delete blob_map row for cid %q: %w", row.CID, err)
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("read blob_map delete rows affected for cid %q: %w", row.CID, err)
+			}
+			rowsDeleted += affected
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit blob gc transaction: %w", err)
+		}
+
+		for _, row := range deletePlanRows {
+			cachePath := strings.TrimSpace(row.CachePath)
+			if cachePath == "" {
+				resolved, err := blobPlainCachePath(absCacheDir, row.CID)
+				if err == nil {
+					cachePath = resolved
+				}
+			}
+			if cachePath == "" {
+				continue
+			}
+			err := os.Remove(cachePath)
+			if err == nil {
+				cacheDeleted++
+				if *verbose {
+					log.Printf("[blob gc] removed cache file %s", cachePath)
+				}
+				continue
+			}
+			if os.IsNotExist(err) {
+				continue
+			}
+			cacheDeleteWarnings++
+			log.Printf("[blob gc] warning: remove cache file %s: %v", cachePath, err)
+		}
+	}
+
+	return renderBlobGCOutput(
+		resolvedOutputMode,
+		blobGCOutput{
+			DB:                   absDBPath,
+			CacheDir:             absCacheDir,
+			SnapshotDB:           absSnapshotDBPath,
+			VectorQueueDB:        absVectorQueueDBPath,
+			Applied:              *apply,
+			SnapshotRefsEnabled:  !*noSnapshotRefs,
+			VectorRefsEnabled:    !*noVectorRefs,
+			SnapshotRefsFound:    snapshotRefs,
+			VectorRefsFound:      vectorRefs,
+			LiveCIDCount:         len(live),
+			BlobMapRowsScanned:   len(rows),
+			BlobMapDeletePlan:    len(deletePlanRows),
+			BlobMapRowsDeleted:   rowsDeleted,
+			CacheDeletePlan:      len(deletePlanRows),
+			CacheFilesDeleted:    cacheDeleted,
+			CacheDeleteWarnCount: cacheDeleteWarnings,
+		},
+	)
+}
+
 func renderBlobPutOutput(mode string, output blobPutOutput) error {
 	switch mode {
 	case outputModeKV:
@@ -963,6 +1155,54 @@ func renderBlobListOutput(mode string, output blobListOutput) error {
 	}
 }
 
+func renderBlobGCOutput(mode string, output blobGCOutput) error {
+	switch mode {
+	case outputModeKV:
+		fmt.Printf("db=%s\n", output.DB)
+		fmt.Printf("cache_dir=%s\n", output.CacheDir)
+		fmt.Printf("snapshot_db=%s\n", output.SnapshotDB)
+		fmt.Printf("vector_queue_db=%s\n", output.VectorQueueDB)
+		fmt.Printf("applied=%t\n", output.Applied)
+		fmt.Printf("snapshot_refs_enabled=%t\n", output.SnapshotRefsEnabled)
+		fmt.Printf("vector_refs_enabled=%t\n", output.VectorRefsEnabled)
+		fmt.Printf("snapshot_refs_found=%d\n", output.SnapshotRefsFound)
+		fmt.Printf("vector_refs_found=%d\n", output.VectorRefsFound)
+		fmt.Printf("live_cid_count=%d\n", output.LiveCIDCount)
+		fmt.Printf("blob_map_rows_scanned=%d\n", output.BlobMapRowsScanned)
+		fmt.Printf("blob_map_delete_plan=%d\n", output.BlobMapDeletePlan)
+		fmt.Printf("blob_map_rows_deleted=%d\n", output.BlobMapRowsDeleted)
+		fmt.Printf("cache_delete_plan=%d\n", output.CacheDeletePlan)
+		fmt.Printf("cache_files_deleted=%d\n", output.CacheFilesDeleted)
+		fmt.Printf("cache_delete_warning_count=%d\n", output.CacheDeleteWarnCount)
+		return nil
+	case outputModeJSON:
+		return printJSON(output)
+	case outputModePretty:
+		printPrettyTitle("Blob GC")
+		printPrettyFields([]outputField{
+			{Label: "Database", Value: output.DB},
+			{Label: "Cache Dir", Value: output.CacheDir},
+			{Label: "Snapshot DB", Value: output.SnapshotDB},
+			{Label: "Vector Queue DB", Value: output.VectorQueueDB},
+			{Label: "Applied", Value: strconv.FormatBool(output.Applied)},
+			{Label: "Snapshot Refs Enabled", Value: strconv.FormatBool(output.SnapshotRefsEnabled)},
+			{Label: "Vector Refs Enabled", Value: strconv.FormatBool(output.VectorRefsEnabled)},
+			{Label: "Snapshot Refs Found", Value: strconv.Itoa(output.SnapshotRefsFound)},
+			{Label: "Vector Refs Found", Value: strconv.Itoa(output.VectorRefsFound)},
+			{Label: "Live CIDs", Value: strconv.Itoa(output.LiveCIDCount)},
+			{Label: "Blob Map Rows Scanned", Value: strconv.Itoa(output.BlobMapRowsScanned)},
+			{Label: "Blob Map Delete Plan", Value: strconv.Itoa(output.BlobMapDeletePlan)},
+			{Label: "Blob Map Rows Deleted", Value: strconv.FormatInt(output.BlobMapRowsDeleted, 10)},
+			{Label: "Cache Delete Plan", Value: strconv.Itoa(output.CacheDeletePlan)},
+			{Label: "Cache Files Deleted", Value: strconv.Itoa(output.CacheFilesDeleted)},
+			{Label: "Cache Delete Warnings", Value: strconv.Itoa(output.CacheDeleteWarnCount)},
+		})
+		return nil
+	default:
+		return fmt.Errorf("unsupported output mode %q", mode)
+	}
+}
+
 func defaultBlobDBPath() string {
 	if custom := strings.TrimSpace(os.Getenv(blobDBEnv)); custom != "" {
 		return custom
@@ -991,6 +1231,21 @@ func defaultBlobCacheDir() string {
 		cacheHome = filepath.Join(home, ".cache")
 	}
 	return filepath.Join(cacheHome, snapshotDBDirName, blobCacheDefaultDir)
+}
+
+func defaultVectorQueueDBPathForGC() string {
+	if custom := strings.TrimSpace(os.Getenv("FORGE_VECTOR_QUEUE_DB")); custom != "" {
+		return custom
+	}
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if strings.TrimSpace(dataHome) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join(snapshotDBDirName, "vector", "queue.db")
+		}
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataHome, snapshotDBDirName, "vector", "queue.db")
 }
 
 func openBlobDB(path string) (*sql.DB, error) {
@@ -1183,6 +1438,146 @@ func listBlobMappings(db *sql.DB, limit int) ([]blobMapRow, error) {
 		return nil, fmt.Errorf("iterate blob mappings: %w", err)
 	}
 	return result, nil
+}
+
+func listAllBlobMappings(db *sql.DB) ([]blobMapRow, error) {
+	rows, err := db.Query(
+		`SELECT cid, oid, plain_size, cipher_size, cipher_hash, cache_path, updated_at_ns
+		 FROM blob_map
+		 ORDER BY cid ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query all blob mappings: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]blobMapRow, 0)
+	for rows.Next() {
+		row := blobMapRow{}
+		if err := rows.Scan(&row.CID, &row.OID, &row.PlainSize, &row.CipherSize, &row.CipherHash, &row.CachePath, &row.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan all blob mapping row: %w", err)
+		}
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate all blob mappings: %w", err)
+	}
+	return result, nil
+}
+
+func collectLiveBlobRefsFromSnapshotDB(dbPath string, live map[string]struct{}) (int, error) {
+	if strings.TrimSpace(dbPath) == "" {
+		return 0, nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat snapshot db %q: %w", dbPath, err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return 0, fmt.Errorf("open snapshot db %q: %w", dbPath, err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	rows, err := db.Query(`SELECT DISTINCT target_hash FROM tree_entries WHERE kind = ?`, snapshotKindFile)
+	if err != nil {
+		if isSQLiteNoSuchTableError(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("query snapshot tree entry refs from %q: %w", dbPath, err)
+	}
+	defer rows.Close()
+
+	added := 0
+	for rows.Next() {
+		var targetHash string
+		if err := rows.Scan(&targetHash); err != nil {
+			return added, fmt.Errorf("scan snapshot tree ref row: %w", err)
+		}
+		cid, ok := normalizeBlobCIDRef(targetHash)
+		if !ok {
+			continue
+		}
+		if _, exists := live[cid]; !exists {
+			live[cid] = struct{}{}
+			added++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return added, fmt.Errorf("iterate snapshot tree refs: %w", err)
+	}
+	return added, nil
+}
+
+func collectLiveBlobRefsFromVectorQueueDB(dbPath string, includeErrorJobs bool, live map[string]struct{}) (int, error) {
+	if strings.TrimSpace(dbPath) == "" {
+		return 0, nil
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("stat vector queue db %q: %w", dbPath, err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return 0, fmt.Errorf("open vector queue db %q: %w", dbPath, err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+
+	query := `SELECT DISTINCT file_path FROM jobs WHERE status IN ('pending', 'processing')`
+	if includeErrorJobs {
+		query = `SELECT DISTINCT file_path FROM jobs WHERE status IN ('pending', 'processing', 'error')`
+	}
+	rows, err := db.Query(query)
+	if err != nil {
+		if isSQLiteNoSuchTableError(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("query vector queue refs from %q: %w", dbPath, err)
+	}
+	defer rows.Close()
+
+	added := 0
+	for rows.Next() {
+		var payloadRef string
+		if err := rows.Scan(&payloadRef); err != nil {
+			return added, fmt.Errorf("scan vector queue ref row: %w", err)
+		}
+		cid, ok := normalizeBlobCIDRef(payloadRef)
+		if !ok {
+			continue
+		}
+		if _, exists := live[cid]; !exists {
+			live[cid] = struct{}{}
+			added++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return added, fmt.Errorf("iterate vector queue refs: %w", err)
+	}
+	return added, nil
+}
+
+func normalizeBlobCIDRef(value string) (string, bool) {
+	normalized := normalizeDigestHex(value)
+	if _, err := parseDigestHex32(normalized); err != nil {
+		return "", false
+	}
+	return normalized, true
+}
+
+func isSQLiteNoSuchTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "no such table")
 }
 
 func lookupBlobMapByCID(db *sql.DB, cid string) (blobMapRow, bool, error) {

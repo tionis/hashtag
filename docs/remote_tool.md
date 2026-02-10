@@ -44,3 +44,13 @@ The object stores global backend capabilities and policy used across tools, incl
 - S3 conditional write support flags
 - Global object prefixes
 - Encryption policy for non-config data
+
+## Coordination Direction
+
+For replicated single-writer services (for example `forge vector serve -replication`), Forge should use S3-backed writer leases with capability-driven behavior:
+
+- `hard` mode: CAS/fencing with `If-Match` + `If-None-Match`
+- `soft` mode: best-effort advisory lease for weak S3 backends
+- `off` mode: no lease
+
+The global remote config is the intended place to carry these coordination defaults so all tools can enforce a consistent policy.

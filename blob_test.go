@@ -395,3 +395,198 @@ func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 		t.Fatalf("expected remote object %s to be deleted", oid)
 	}
 }
+
+func TestBlobGCApplyKeepsSnapshotReferencedCID(t *testing.T) {
+	temp := t.TempDir()
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	snapshotDBPath := filepath.Join(temp, "snapshot.db")
+	vectorQueueDBPath := filepath.Join(temp, "queue.db")
+
+	keepPath := filepath.Join(temp, "keep.bin")
+	dropPath := filepath.Join(temp, "drop.bin")
+	keepData := []byte("blob-gc-keep")
+	dropData := []byte("blob-gc-drop")
+	if err := os.WriteFile(keepPath, keepData, 0o644); err != nil {
+		t.Fatalf("write keep input: %v", err)
+	}
+	if err := os.WriteFile(dropPath, dropData, 0o644); err != nil {
+		t.Fatalf("write drop input: %v", err)
+	}
+
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", keepPath}); err != nil {
+		t.Fatalf("put keep blob: %v", err)
+	}
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", dropPath}); err != nil {
+		t.Fatalf("put drop blob: %v", err)
+	}
+
+	keepCID := blake3Hex(keepData)
+	dropCID := blake3Hex(dropData)
+
+	snapshotDB, err := sql.Open("sqlite", snapshotDBPath)
+	if err != nil {
+		t.Fatalf("open snapshot db: %v", err)
+	}
+	if _, err := snapshotDB.Exec(`
+CREATE TABLE tree_entries(
+	target_hash TEXT NOT NULL,
+	kind TEXT NOT NULL
+);
+INSERT INTO tree_entries(target_hash, kind) VALUES (?, 'file');
+`, keepCID); err != nil {
+		_ = snapshotDB.Close()
+		t.Fatalf("seed snapshot refs: %v", err)
+	}
+	_ = snapshotDB.Close()
+
+	if err := runBlobGCCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-snapshot-db", snapshotDBPath,
+		"-vector-queue-db", vectorQueueDBPath,
+		"-apply",
+		"-output", "kv",
+	}); err != nil {
+		t.Fatalf("run blob gc apply: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open blob db: %v", err)
+	}
+	defer db.Close()
+
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM blob_map"); got != 1 {
+		t.Fatalf("expected 1 blob_map row after gc, got %d", got)
+	}
+	var remainingCID string
+	if err := db.QueryRow(`SELECT cid FROM blob_map LIMIT 1`).Scan(&remainingCID); err != nil {
+		t.Fatalf("query remaining cid: %v", err)
+	}
+	if remainingCID != keepCID {
+		t.Fatalf("expected remaining cid %q, got %q", keepCID, remainingCID)
+	}
+
+	keepCachePath, err := blobPlainCachePath(cacheDir, keepCID)
+	if err != nil {
+		t.Fatalf("resolve keep cache path: %v", err)
+	}
+	if _, err := os.Stat(keepCachePath); err != nil {
+		t.Fatalf("expected keep cache file to remain: %v", err)
+	}
+
+	dropCachePath, err := blobPlainCachePath(cacheDir, dropCID)
+	if err != nil {
+		t.Fatalf("resolve drop cache path: %v", err)
+	}
+	if _, err := os.Stat(dropCachePath); !os.IsNotExist(err) {
+		t.Fatalf("expected drop cache file removed, got err=%v", err)
+	}
+}
+
+func TestBlobGCDryRunDoesNotDelete(t *testing.T) {
+	temp := t.TempDir()
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	snapshotDBPath := filepath.Join(temp, "snapshot.db")
+	vectorQueueDBPath := filepath.Join(temp, "queue.db")
+
+	inputPath := filepath.Join(temp, "input.bin")
+	inputData := []byte("blob-gc-dry-run")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", inputPath}); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+
+	cid := blake3Hex(inputData)
+	cachePath, err := blobPlainCachePath(cacheDir, cid)
+	if err != nil {
+		t.Fatalf("resolve cache path: %v", err)
+	}
+
+	if err := runBlobGCCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-snapshot-db", snapshotDBPath,
+		"-vector-queue-db", vectorQueueDBPath,
+		"-output", "kv",
+	}); err != nil {
+		t.Fatalf("run blob gc dry-run: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open blob db: %v", err)
+	}
+	defer db.Close()
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM blob_map"); got != 1 {
+		t.Fatalf("expected 1 blob_map row after dry-run, got %d", got)
+	}
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("expected cache file to remain after dry-run: %v", err)
+	}
+}
+
+func TestBlobGCApplyKeepsVectorQueueReferencedCID(t *testing.T) {
+	temp := t.TempDir()
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	snapshotDBPath := filepath.Join(temp, "snapshot.db")
+	vectorQueueDBPath := filepath.Join(temp, "queue.db")
+
+	inputPath := filepath.Join(temp, "input.bin")
+	inputData := []byte("blob-gc-vector-queue-ref")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", inputPath}); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	cid := blake3Hex(inputData)
+
+	queueDB, err := sql.Open("sqlite", vectorQueueDBPath)
+	if err != nil {
+		t.Fatalf("open vector queue db: %v", err)
+	}
+	if _, err := queueDB.Exec(`
+CREATE TABLE jobs(
+	file_path TEXT NOT NULL,
+	status TEXT NOT NULL
+);
+INSERT INTO jobs(file_path, status) VALUES (?, 'pending');
+`, cid); err != nil {
+		_ = queueDB.Close()
+		t.Fatalf("seed vector queue refs: %v", err)
+	}
+	_ = queueDB.Close()
+
+	if err := runBlobGCCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-snapshot-db", snapshotDBPath,
+		"-vector-queue-db", vectorQueueDBPath,
+		"-apply",
+		"-output", "kv",
+	}); err != nil {
+		t.Fatalf("run blob gc apply: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open blob db: %v", err)
+	}
+	defer db.Close()
+	if got := mustCount(t, db, "SELECT COUNT(*) FROM blob_map"); got != 1 {
+		t.Fatalf("expected 1 blob_map row after queue-referenced gc, got %d", got)
+	}
+	cachePath, err := blobPlainCachePath(cacheDir, cid)
+	if err != nil {
+		t.Fatalf("resolve cache path: %v", err)
+	}
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("expected cache file for queue-referenced cid to remain: %v", err)
+	}
+}
