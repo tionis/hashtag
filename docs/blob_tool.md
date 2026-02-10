@@ -10,7 +10,6 @@
 - `forge blob ls [options]`
 - `forge blob rm [options] -cid <cid>`
 - `forge blob rm [options] -oid <oid>`
-- `forge blob serve [options]`
 
 ## Behavior
 
@@ -18,8 +17,9 @@
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 with key/nonce material derived from CID.
 - Encrypted object identity (`oid`) is deterministic from CID.
 - Local blob cache stores plaintext by CID.
-- Remote backend stores encrypted payloads by OID.
+- Remote backend stores encrypted payloads by OID in S3.
 - Local `blob put` attempts a CoW reflink clone into cache first, then falls back to a regular copy.
+- Remote access for `put/get/rm` is enabled with `-remote` and uses global config from `forge remote config`.
 
 ## Metadata Tables
 
@@ -34,14 +34,9 @@
 
 `put`, `get`, `ls`, and `rm` support `-output auto|pretty|kv|json`.
 
-## Minimal Backend Server
+## Remote Prerequisite
 
-`forge blob serve` exposes:
+Before using `-remote`, initialize the global remote config object:
 
-- `GET /healthz`
-- `PUT /v1/blobs/{oid}`
-- `GET /v1/blobs/{oid}`
-- `HEAD /v1/blobs/{oid}`
-- `DELETE /v1/blobs/{oid}`
-
-Server stores encrypted payloads only and can verify payload/OID consistency.
+- `forge remote config init`
+- `forge remote config show`

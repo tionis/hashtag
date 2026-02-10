@@ -8,7 +8,8 @@ Current tools:
 - `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
 - `forge hashmap`: map external digests back to BLAKE3 identities.
 - `forge tags`: manage `user.xdg.tags` metadata on files/paths.
-- `forge blob`: deterministic encrypted blob storage with local cache + optional HTTP backend.
+- `forge remote`: global S3 backend configuration shared across Forge features.
+- `forge blob`: deterministic encrypted blob storage with plaintext local cache + optional S3 remote sync.
 
 ## Install
 
@@ -28,6 +29,7 @@ Top-level commands:
 - `forge snapshot`
 - `forge hashmap`
 - `forge tags`
+- `forge remote`
 - `forge blob`
 - `forge completion`
 
@@ -204,6 +206,33 @@ Hashmap flags:
 - `-digest`: digest value (lookup)
 - `-blake3`: BLAKE3 digest value (show)
 
+## Remote Tool
+
+Initialize global remote config object in S3:
+
+```bash
+forge remote config init [flags]
+```
+
+Show global remote config object from S3:
+
+```bash
+forge remote config show [flags]
+```
+
+Remote config is loaded from S3 using environment bootstrap:
+- `FORGE_S3_BUCKET` (required)
+- `FORGE_S3_REGION` (default `us-east-1`)
+- `FORGE_S3_ENDPOINT_URL` (optional)
+- `FORGE_S3_ACCESS_KEY_ID` + `FORGE_S3_SECRET_ACCESS_KEY` (optional as pair)
+- `FORGE_S3_SESSION_TOKEN` (optional)
+- `FORGE_S3_FORCE_PATH_STYLE` (optional bool)
+- `FORGE_REMOTE_CONFIG_KEY` (default `forge/config.json`)
+- `FORGE_REMOTE_DB` (optional local config-cache DB path; default `${XDG_DATA_HOME}/forge/remote.db`)
+
+`forge remote config init` probes and records S3 capability flags by default (`If-None-Match`, `If-Match`, and `response_checksums`). Use `-probe-capabilities=false` with `-cap-if-none-match` / `-cap-if-match` / `-cap-response-checksums` to override manually.
+`forge remote config init -config-cache-ttl <seconds>` sets `cache.remote_config_ttl_seconds`; remote-backed operations use local SQLite cache and refresh from S3 when this TTL expires.
+
 ## Blob Tool
 
 Put/encrypt a blob from a local file:
@@ -234,25 +263,14 @@ forge blob rm [flags] -cid <cid>
 forge blob rm [flags] -oid <oid>
 ```
 
-Run a minimal HTTP blob backend:
-
-```bash
-forge blob serve [flags]
-```
-
 Blob flags:
 - `-db`: blob metadata DB path (default from `${FORGE_BLOB_DB}` or `${XDG_DATA_HOME}/forge/blob.db`)
 - `-cache`: local plaintext blob cache dir (default from `${FORGE_BLOB_CACHE}` or `${XDG_CACHE_HOME}/forge/blobs`)
-- `-server`: optional blob backend base URL (for `put` upload and `get` cache-miss fetch)
-- `-backend`: backend name used in `remote_blob_inventory` rows for put/get (default `blob-http`), or optional filter for `blob rm`
-- `-bucket`: bucket/group label used in `remote_blob_inventory` rows for put/get (default `default`), or optional filter for `blob rm`
+- `-remote`: upload/fetch/delete encrypted blob objects using configured S3 remote (`put/get/rm`)
 - `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
 - `-oid`: encrypted object ID selector for `blob get`/`blob rm`
 - `-out`: output plaintext path for `blob get` (required)
 - `-local`: local cache + `blob_map` deletion toggle for `blob rm` (default `true`)
-- `-remote`: remote encrypted object + inventory deletion toggle for `blob rm` (default `false`; requires `-server`)
-- `-listen`: HTTP listen address for `blob serve` (default `127.0.0.1:8787`)
-- `-root`: encrypted object root dir for `blob serve`
 - `-limit`: max rows for `blob ls`
 - `-output`: output mode `auto|pretty|kv|json` (put/get/ls/rm)
 - `-v`: verbose output (put/get/rm)
@@ -261,6 +279,7 @@ Blob notes:
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
 - OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
 - Local cache stores plaintext by CID for filesystem-level dedupe; remote payloads are encrypted.
+- Remote objects are written under a deterministic key layout derived from global remote config.
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
@@ -295,6 +314,7 @@ Notes:
 - Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
 - Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tags tool: [`docs/tags_tool.md`](docs/tags_tool.md)
+- Remote tool: [`docs/remote_tool.md`](docs/remote_tool.md)
 - Blob tool: [`docs/blob_tool.md`](docs/blob_tool.md)
 - Tool rules: [`docs/tool_rules.md`](docs/tool_rules.md)
 - Output modes: [`docs/output_modes.md`](docs/output_modes.md)

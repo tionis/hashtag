@@ -12,6 +12,7 @@ This folder contains architecture notes and tool contracts for Forge.
 - `relay_architecture.md`: Nostr-inspired relay design for events, locking, and coordination primitives.
 - `hashmap_tool.md`: `forge hashmap` command model and mapping-table semantics.
 - `tags_tool.md`: `forge tags` xattr tag-management behavior and output.
+- `remote_tool.md`: `forge remote` global S3 backend configuration.
 - `blob_tool.md`: `forge blob` deterministic encrypted blob commands and backend behavior.
 - `file_hashing_via_xattrs.md`: hash cache metadata spec used by `forge hash`.
 
