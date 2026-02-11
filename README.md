@@ -30,6 +30,7 @@ Top-level commands:
 - `forge snapshot`
 - `forge hashmap`
 - `forge tags`
+- `forge config`
 - `forge remote`
 - `forge blob`
 - `forge vector`
@@ -39,18 +40,25 @@ Output mode convention:
 - Many commands support `-output auto|pretty|kv|json`.
 - `auto` chooses `pretty` for interactive terminals and `kv` for non-interactive/scripted output.
 
-## Local Path Environment Overrides
+## Local Path Configuration
 
-Forge stores local state under XDG paths by default. These env vars override specific local paths:
+Forge stores local state under XDG paths by default.
 
-- `FORGE_SNAPSHOT_DB` (default `${XDG_DATA_HOME}/forge/snapshot.db`, fallback `~/.local/share/forge/snapshot.db`)
-- `FORGE_BLOB_DB` (default `${XDG_DATA_HOME}/forge/blob.db`, fallback `~/.local/share/forge/blob.db`)
-- `FORGE_BLOB_CACHE` (default `${XDG_CACHE_HOME}/forge/blobs`, fallback `~/.cache/forge/blobs`)
-- `FORGE_REMOTE_DB` (default `${XDG_DATA_HOME}/forge/remote.db`, fallback `~/.local/share/forge/remote.db`)
-- `FORGE_VECTOR_EMBED_DB` (default `${XDG_DATA_HOME}/forge/vector/embeddings.db`, fallback `~/.local/share/forge/vector/embeddings.db`)
-- `FORGE_VECTOR_QUEUE_DB` (default `${XDG_DATA_HOME}/forge/vector/queue.db`, fallback `~/.local/share/forge/vector/queue.db`)
-- `FORGE_VECTOR_TEMP_DIR` (default `${XDG_CACHE_HOME}/forge/vector/tmp`, fallback `~/.cache/forge/vector/tmp`)
-- `FORGE_VECTOR_HYDRATED_DB` (default `${XDG_DATA_HOME}/forge/embeddings.db`, fallback `~/.local/share/forge/embeddings.db`)
+Base path overrides:
+
+- `FORGE_DATA_DIR` (default `${XDG_DATA_HOME}/forge`, fallback `~/.local/share/forge`)
+- `FORGE_CACHE_DIR` (default `${XDG_CACHE_HOME}/forge`, fallback `~/.cache/forge`)
+
+Fine-grained path overrides:
+
+- `FORGE_PATH_SNAPSHOT_DB` (default `${FORGE_DATA_DIR}/snapshot.db`)
+- `FORGE_PATH_BLOB_DB` (default `${FORGE_DATA_DIR}/blob.db`)
+- `FORGE_PATH_BLOB_CACHE` (default `${FORGE_CACHE_DIR}/blobs`)
+- `FORGE_PATH_REMOTE_DB` (default `${FORGE_DATA_DIR}/remote.db`)
+- `FORGE_PATH_VECTOR_EMBED_DB` (default `${FORGE_DATA_DIR}/vector/embeddings.db`)
+- `FORGE_PATH_VECTOR_QUEUE_DB` (default `${FORGE_DATA_DIR}/vector/queue.db`)
+- `FORGE_PATH_VECTOR_TEMP_DIR` (default `${FORGE_CACHE_DIR}/vector/tmp`)
+- `FORGE_PATH_VECTOR_HYDRATED_DB` (default `${FORGE_DATA_DIR}/embeddings.db`)
 
 ## Hash Tool
 
@@ -141,7 +149,7 @@ forge snapshot query -tree <tree_hash> -tags tag1,tag2 [flags]
 ```
 
 Snapshot flags:
-- `-db`: snapshot DB path (default from `${FORGE_SNAPSHOT_DB}` or `${XDG_DATA_HOME}/forge/snapshot.db`, fallback `~/.local/share/forge/snapshot.db`)
+- `-db`: snapshot DB path (default from `${FORGE_PATH_SNAPSHOT_DB}` or `${FORGE_DATA_DIR}/snapshot.db`)
 - `-output`: output mode `auto|pretty|kv|json` (create/history/diff/inspect/query, default `auto`)
 - `-v`: verbose output (create/remote create)
 - `-strict`: fail immediately on recoverable scan/hash warnings (create/remote create)
@@ -221,6 +229,18 @@ Hashmap flags:
 - `-digest`: digest value (lookup)
 - `-blake3`: BLAKE3 digest value (show)
 
+## Config Tool
+
+Inspect effective local and remote-derived configuration:
+
+```bash
+forge config show [flags]
+```
+
+Config show flags:
+- `-effective`: print resolved effective values (currently must be `true`)
+- `-output`: output mode `auto|pretty|kv|json` (default `auto`)
+
 ## Remote Tool
 
 Initialize global remote config object in S3:
@@ -243,7 +263,10 @@ Remote config is loaded from S3 using environment bootstrap:
 - `FORGE_S3_SESSION_TOKEN` (optional)
 - `FORGE_S3_FORCE_PATH_STYLE` (optional bool)
 - `FORGE_REMOTE_CONFIG_KEY` (default `forge/config.json`)
-- `FORGE_REMOTE_DB` (optional local config-cache DB path; default `${XDG_DATA_HOME}/forge/remote.db`)
+- `FORGE_PATH_REMOTE_DB` (optional local config-cache DB path; default `${FORGE_DATA_DIR}/remote.db`)
+- `FORGE_TRUST_SIGNING_KEY` (optional default path for `forge remote config init -signing-key`)
+
+Forge trust roots are non-overridable and are compiled from `forge.pub`.
 
 `forge remote config init` probes and records S3 capability flags by default (`If-None-Match`, `If-Match`, and `response_checksums`). Use `-probe-capabilities=false` with `-cap-if-none-match` / `-cap-if-match` / `-cap-response-checksums` to override manually.
 `forge remote config init -config-cache-ttl <seconds>` sets `cache.remote_config_ttl_seconds`; remote-backed operations use local SQLite cache and refresh from S3 when this TTL expires.
@@ -252,6 +275,12 @@ Remote config is loaded from S3 using environment bootstrap:
 - `-vector-lease-resource <resource-key>`
 - `-vector-lease-duration <seconds>`
 - `-vector-lease-renew-interval <seconds>`
+
+Remote config is signed:
+- `forge remote config init -signing-key <path>` signs the config envelope using an OpenSSH private key.
+- Optional: `-doc-version <int64>` and `-doc-expires-seconds <seconds>` (`0` disables expiry).
+- Optional trust map input: `-trust-nodes-file <json>` + `-root-node-name <name>`.
+- Forge verifies signatures against compiled trust roots and enforces local anti-rollback state in `${XDG_DATA_HOME}/forge/remote.db`.
 
 ## Blob Tool
 
@@ -296,8 +325,8 @@ forge blob refs publish [flags]
 ```
 
 Blob flags:
-- `-db`: blob metadata DB path (default from `${FORGE_BLOB_DB}` or `${XDG_DATA_HOME}/forge/blob.db`)
-- `-cache`: local plaintext blob cache dir (default from `${FORGE_BLOB_CACHE}` or `${XDG_CACHE_HOME}/forge/blobs`)
+- `-db`: blob metadata DB path (default from `${FORGE_PATH_BLOB_DB}` or `${FORGE_DATA_DIR}/blob.db`)
+- `-cache`: local plaintext blob cache dir (default from `${FORGE_PATH_BLOB_CACHE}` or `${FORGE_CACHE_DIR}/blobs`)
 - `-remote`: upload/fetch/delete encrypted blob objects using configured S3 remote (`put/get/rm`)
 - `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
 - `-oid`: encrypted object ID selector for `blob get`/`blob rm`
@@ -379,13 +408,13 @@ forge vector lease-status [flags]
 - `FORGE_VECTOR_REPLICA_RESTORE_ON_START` (default `true`)
 
 Local vector storage paths use:
-- `FORGE_VECTOR_EMBED_DB`
-- `FORGE_VECTOR_QUEUE_DB`
-- `FORGE_VECTOR_TEMP_DIR`
+- `FORGE_PATH_VECTOR_EMBED_DB`
+- `FORGE_PATH_VECTOR_QUEUE_DB`
+- `FORGE_PATH_VECTOR_TEMP_DIR`
 
 Vector payload spool storage uses the shared blob store paths:
-- `FORGE_BLOB_DB`
-- `FORGE_BLOB_CACHE`
+- `FORGE_PATH_BLOB_DB`
+- `FORGE_PATH_BLOB_CACHE`
 
 Replication behavior:
 - By default, `forge vector serve` runs local-only (no replication).
@@ -396,15 +425,15 @@ Replication behavior:
 - `-root` local scan root (default `.`)
 - `-kind` embedding kind (`image|text`, default `image`)
 - `-algo` hash algorithm for xattr cache (`blake3`, default `blake3`)
-- `-hydrated-db` hydrated embeddings DB path (default `${XDG_DATA_HOME}/forge/embeddings.db`)
+- `-hydrated-db` hydrated embeddings DB path (default `${FORGE_PATH_VECTOR_HYDRATED_DB}` or `${FORGE_DATA_DIR}/embeddings.db`)
 - `-workers` worker count (default `NumCPU`)
 - `-lookup-batch` hashes per lookup request (default `500`)
 - `-http-timeout` request timeout (default `120s`)
 - `-v` verbose logging
 
 Vector upload queue behavior:
-- Uploads are staged briefly under `FORGE_VECTOR_TEMP_DIR`.
-- Payloads are then stored in local blob cache (`blob_map` + `FORGE_BLOB_CACHE`) and queue records store payload CIDs.
+- Uploads are staged briefly under `FORGE_PATH_VECTOR_TEMP_DIR`.
+- Payloads are then stored in local blob cache (`blob_map` + `FORGE_PATH_BLOB_CACHE`) and queue records store payload CIDs.
 - Worker reads payload content by CID from blob cache (with legacy file-path fallback for pre-migration queue rows).
 
 ## Tags Tool

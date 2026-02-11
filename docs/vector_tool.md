@@ -33,11 +33,13 @@ Runtime env:
 
 Local storage env overrides:
 
-- `FORGE_VECTOR_EMBED_DB` (default `${XDG_DATA_HOME}/forge/vector/embeddings.db`)
-- `FORGE_VECTOR_QUEUE_DB` (default `${XDG_DATA_HOME}/forge/vector/queue.db`)
-- `FORGE_VECTOR_TEMP_DIR` (default `${XDG_CACHE_HOME}/forge/vector/tmp`)
-- `FORGE_BLOB_DB` (default `${XDG_DATA_HOME}/forge/blob.db`)
-- `FORGE_BLOB_CACHE` (default `${XDG_CACHE_HOME}/forge/blobs`)
+- `FORGE_DATA_DIR` (base default `${XDG_DATA_HOME}/forge`)
+- `FORGE_CACHE_DIR` (base default `${XDG_CACHE_HOME}/forge`)
+- `FORGE_PATH_VECTOR_EMBED_DB` (default `${FORGE_DATA_DIR}/vector/embeddings.db`)
+- `FORGE_PATH_VECTOR_QUEUE_DB` (default `${FORGE_DATA_DIR}/vector/queue.db`)
+- `FORGE_PATH_VECTOR_TEMP_DIR` (default `${FORGE_CACHE_DIR}/vector/tmp`)
+- `FORGE_PATH_BLOB_DB` (default `${FORGE_DATA_DIR}/blob.db`)
+- `FORGE_PATH_BLOB_CACHE` (default `${FORGE_CACHE_DIR}/blobs`)
 
 Replication:
 
@@ -60,7 +62,7 @@ Flags:
 - `-root` scan root (default `.`)
 - `-kind` `image|text` (default `image`)
 - `-algo` `blake3` (default `blake3`)
-- `-hydrated-db` local hydrated DB precheck path (default `${XDG_DATA_HOME}/forge/embeddings.db`, override `FORGE_VECTOR_HYDRATED_DB`)
+- `-hydrated-db` local hydrated DB precheck path (default `${FORGE_PATH_VECTOR_HYDRATED_DB}` or `${FORGE_DATA_DIR}/embeddings.db`)
 - `-workers` worker count (default `NumCPU`)
 - `-lookup-batch` lookup batch size (default `500`)
 - `-http-timeout` request timeout (default `120s`)
@@ -111,8 +113,8 @@ Local files:
 
 - `embeddings.db`: final vectors (`image_embeddings`, `text_embeddings`)
 - `queue.db`: queue state (`jobs`)
-- `FORGE_VECTOR_TEMP_DIR`: short-lived upload staging
-- `blob.db` + `FORGE_BLOB_CACHE`: payload spool by CID (queue stores CID refs)
+- `FORGE_PATH_VECTOR_TEMP_DIR`: short-lived upload staging
+- `blob.db` + `FORGE_PATH_BLOB_CACHE`: payload spool by CID (queue stores CID refs)
 
 Remote files:
 

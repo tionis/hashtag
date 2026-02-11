@@ -28,6 +28,14 @@ Set vector writer lease policy during init:
 - `-vector-lease-duration=<seconds>`
 - `-vector-lease-renew-interval=<seconds>`
 
+Signed config controls:
+
+- `-signing-key=<path>` OpenSSH private key used to sign the config document
+- `-doc-version=<int64>` signed document version (`auto` if omitted)
+- `-doc-expires-seconds=<seconds>` optional signed document expiry (`0` disables expiry)
+- `-trust-nodes-file=<path>` optional JSON trust node list
+- `-root-node-name=<name>` node name assigned to signing root key in trust map
+
 ## Bootstrap Environment
 
 Remote config is read/written via S3 using environment bootstrap:
@@ -39,9 +47,30 @@ Remote config is read/written via S3 using environment bootstrap:
 - `FORGE_S3_SESSION_TOKEN` (optional)
 - `FORGE_S3_FORCE_PATH_STYLE` (optional bool)
 - `FORGE_REMOTE_CONFIG_KEY` (default `forge/config.json`)
-- `FORGE_REMOTE_DB` (optional local SQLite cache path; default `${XDG_DATA_HOME}/forge/remote.db`)
+- `FORGE_PATH_REMOTE_DB` (optional local SQLite cache path; default `${FORGE_DATA_DIR}/remote.db`)
+- `FORGE_TRUST_SIGNING_KEY` (optional default for `-signing-key`)
+
+Trust roots are non-overridable and compiled from `forge.pub`.
 
 Remote-backed operations read remote config through local SQLite cache and refresh from S3 once TTL expires.
+
+## Trust Model
+
+The remote config object is a signed envelope (`forge.signed_document.v1`) with:
+
+- `document_type=remote_config`
+- monotonic `version`
+- optional `expires_at_utc`
+- signer public key + detached signature
+- canonical JSON payload (`remoteGlobalConfig`)
+
+Forge verifies:
+
+- signature validity against trusted root keys
+- optional expiry
+- monotonic anti-rollback state in local SQLite (`remote_trust_state`)
+
+The payload also carries a signed trust node map (`trust.nodes`) for cross-node key identity metadata.
 
 ## Config Intent
 
@@ -49,7 +78,6 @@ The object stores global backend capabilities and policy used across tools, incl
 
 - S3 conditional write support flags
 - Global object prefixes
-- Encryption policy for non-config data
 - Coordination policy (`coordination.vector_writer_lease.*`) for replicated single-writer services
 
 ## Coordination Direction

@@ -32,6 +32,17 @@ Status:
 - shared remote backend session loading is implemented for vector replication and blob remote store paths
 - node reference-set publishing is implemented via `forge blob refs publish` as a foundation for remote/global blob GC workers
 
+## Trust Foundation
+
+Remote configuration now uses signed documents:
+
+- root keys are pinned locally and compiled into the Forge binary
+- remote config envelope carries `version`, optional `expires_at_utc`, signer key, and signature
+- payload includes `trust.nodes` (`node_name -> public_key`) metadata
+- local SQLite stores verified version/hash state to detect rollback/conflict attacks
+
+This provides integrity/authenticity for control-plane settings even when object storage is untrusted.
+
 ## Lease/Fencing Without Relay
 
 When running replicated single-writer services (for example `forge vector serve -replication`), Forge uses an S3-backed lease with capability-driven behavior, configured via global remote config (`coordination.vector_writer_lease`).

@@ -31,5 +31,5 @@ Implications:
 
 ## Shared Flags
 
-- `-db`: path to snapshot database (`FORGE_SNAPSHOT_DB` default applies)
+- `-db`: path to snapshot database (`FORGE_PATH_SNAPSHOT_DB` default applies)
 - `-v`: verbose ingest logging (`ingest` only)
