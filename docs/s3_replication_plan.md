@@ -22,7 +22,7 @@ This document captures the planned S3-only replication model for Forge.
 | `snapshot.db` | `${FORGE_PATH_SNAPSHOT_DB}` | S3 replica path via background daemon | age to node key + master/root key | Daemon-driven restore optional; local file remains authoritative for node workflows | Planned |
 | `vector/embeddings.db` | `${FORGE_PATH_VECTOR_EMBED_DB}` | `<object_prefix>/vector/embeddings` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
 | `vector/queue.db` | `${FORGE_PATH_VECTOR_QUEUE_DB}` | `<object_prefix>/vector/queue` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
-| `embeddings.db` (hydrated ingest cache) | `${FORGE_PATH_VECTOR_HYDRATED_DB}` | Hydrated from embeddings replica stream | none (local cache) | Refreshed before/for ingest lookup prechecks | Planned |
+| `embeddings.db` (hydrated ingest cache) | `${FORGE_PATH_VECTOR_HYDRATED_DB}` | Hydrated from embeddings replica stream | none (local cache) | Refreshed before/for ingest lookup prechecks | Implemented (best effort) |
 | `blob.db` | `${FORGE_PATH_BLOB_DB}` | none | n/a | Local-only metadata DB | Implemented local-only |
 | `refs.db` | `${FORGE_DATA_DIR}/refs.db` (planned) | `<object_prefix>/gc/node-refs/<node_id>/refs.db` | none | Restored by workers/clients that need node refs state | Planned |
 | `s3-blobs.db` (remote inventory base) | `${FORGE_DATA_DIR}/s3-blobs.db` (planned) | Published by GC worker under immutable generation key | none | Rehydrate when `gc_info.generation` changes | Planned |
@@ -54,6 +54,7 @@ This document captures the planned S3-only replication model for Forge.
 ### 3. Ingest Hydration
 
 - `forge vector ingest` hydrates/refreshes `${FORGE_PATH_VECTOR_HYDRATED_DB}` from the embeddings replica stream.
+- Hydration is best effort: restore failures fall back to local existing cache (if present) or skip precheck cache with warning logs.
 - Use hydrated DB for local precheck to reduce upload/lookup churn.
 
 ### 4. Remote Blob Inventory Cache

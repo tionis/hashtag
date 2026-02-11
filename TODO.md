@@ -21,9 +21,9 @@
 
 ### Phase 2: Ingest Hydration
 
-- [ ] Add hydration flow for `${FORGE_PATH_VECTOR_HYDRATED_DB}` during/for `forge vector ingest`.
-- [ ] Use hydrated DB state for local precheck filtering before server lookup/upload.
-- [ ] Add stale/missing hydration fallback behavior with clear logging.
+- [x] Add hydration flow for `${FORGE_PATH_VECTOR_HYDRATED_DB}` during/for `forge vector ingest`.
+- [x] Use hydrated DB state for local precheck filtering before server lookup/upload.
+- [x] Add stale/missing hydration fallback behavior with clear logging.
 
 ### Phase 3: Background Daemon Replication
 

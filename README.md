@@ -438,7 +438,7 @@ Vector upload queue behavior:
 - Uploads are staged briefly under `FORGE_PATH_VECTOR_TEMP_DIR`.
 - Payloads are then stored in local blob cache (`blob_map` + `FORGE_PATH_BLOB_CACHE`) and queue records store payload CIDs.
 - Worker reads payload content by CID from blob cache (with legacy file-path fallback for pre-migration queue rows).
-- Planned ingest hydration: `forge vector ingest` hydrates `${FORGE_PATH_VECTOR_HYDRATED_DB}` from S3 replica state for precheck acceleration.
+- `forge vector ingest` hydrates `${FORGE_PATH_VECTOR_HYDRATED_DB}` from S3 replica state (best effort) before precheck filtering; on restore failure it logs a warning and continues.
 
 ## Tags Tool
 

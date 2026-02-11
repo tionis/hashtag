@@ -72,7 +72,7 @@ Flags:
 Notes:
 
 - Upload validation compares `X-File-Hash` to uploaded content BLAKE3.
-- Planned hydration path: ingest refreshes `${FORGE_PATH_VECTOR_HYDRATED_DB}` from replica state before/for precheck filtering.
+- Ingest hydration path: `forge vector ingest` refreshes `${FORGE_PATH_VECTOR_HYDRATED_DB}` from embeddings replica state before precheck filtering (best effort with fallback logging).
 
 ## API Contract
 

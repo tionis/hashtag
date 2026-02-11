@@ -116,6 +116,7 @@ func runVectorIngestCommand(args []string) error {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	hydrateVectorIngestDB(ctx, cfg, logger)
 	return ingestclient.Run(ctx, cfg, logger)
 }
 
