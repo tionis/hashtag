@@ -420,8 +420,8 @@ Vector payload spool storage uses the shared blob store paths:
 - `FORGE_PATH_BLOB_CACHE`
 
 Replication behavior:
-- Current implementation: `forge vector serve` runs local-only unless `-replication` is set.
-- Planned target: replication becomes default, `-replication` is removed, and both `vector/embeddings.db` and `vector/queue.db` are restored/streamed under lease control.
+- `forge vector serve` always configures remote replication from Forge remote config.
+- Both `vector/embeddings.db` and `vector/queue.db` are restored/streamed under lease control.
 
 `forge vector ingest` flags:
 - `-server` coordinator base URL (default `http://localhost:8080`)

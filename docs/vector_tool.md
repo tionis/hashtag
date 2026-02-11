@@ -4,13 +4,9 @@
 
 ## Commands
 
-- `forge vector serve [-replication]`
+- `forge vector serve`
 - `forge vector ingest [flags]`
 - `forge vector lease-status [options]`
-
-Planned command change:
-
-- remove `-replication`; replication/restore becomes default for `forge vector serve`.
 
 ## Service: `forge vector serve`
 
@@ -21,7 +17,7 @@ Runs the embedding coordinator:
 - queue dedupe by `(file_hash, kind)`
 - worker dispatch + ingestion into `embeddings.db`
 - crash recovery of `processing -> pending` at startup
-- optional Litestream replication for `embeddings.db`
+- Litestream replication for `embeddings.db` and `queue.db`
 
 Runtime env:
 
@@ -49,18 +45,13 @@ Replication:
 
 Current implementation:
 
-- local-only unless `-replication` is provided
-- replica target path is derived as `<object_prefix>/vector/embeddings`
-- startup restore applies to embeddings DB when replication is enabled
-- lease behavior is configured in remote config under `coordination.vector_writer_lease` (mode/resource/duration/renew interval)
-- `forge vector lease-status` inspects current lease object state (`owner_id`, `lease_id`, expiry, mode)
-
-Planned target:
-
 - replication is always enabled for `forge vector serve`
-- both `vector/embeddings.db` and `vector/queue.db` are restored on startup
+- replica base path is derived as `<object_prefix>/vector`
+- startup restore applies to both `embeddings.db` and `queue.db`
 - both databases are streamed during runtime
 - writer lease is acquired before write-serving and enforced continuously
+- lease behavior is configured in remote config under `coordination.vector_writer_lease` (mode/resource/duration/renew interval)
+- `forge vector lease-status` inspects current lease object state (`owner_id`, `lease_id`, expiry, mode)
 
 ## Client: `forge vector ingest`
 
@@ -130,11 +121,6 @@ Local files:
 Remote files:
 
 Current implementation:
-
-- only `embeddings.db` Litestream replica (when `-replication` is enabled)
-- queue DB and payload spool are local-only
-
-Planned target:
 
 - `embeddings.db` and `queue.db` are both replicated via Litestream
 - payload spool remains local-only

@@ -96,7 +96,7 @@ The object stores global backend capabilities and policy used across tools, incl
 
 ## Coordination Direction
 
-For replicated single-writer services (for example `forge vector serve -replication`), Forge uses S3-backed writer leases from global config (`coordination.vector_writer_lease`) with capability-driven behavior:
+For replicated single-writer services (for example `forge vector serve`), Forge uses S3-backed writer leases from global config (`coordination.vector_writer_lease`) with capability-driven behavior:
 
 - `hard` mode: CAS/fencing with `If-Match` + `If-None-Match`
 - `soft` mode: best-effort advisory lease for weak S3 backends

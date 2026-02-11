@@ -20,8 +20,8 @@ This document captures the planned S3-only replication model for Forge.
 | Database | Local Path | Planned Replication Target | Encryption | Planned Restore Behavior | Status |
 |---|---|---|---|---|---|
 | `snapshot.db` | `${FORGE_PATH_SNAPSHOT_DB}` | S3 replica path via background daemon | age to node key + master/root key | Daemon-driven restore optional; local file remains authoritative for node workflows | Planned |
-| `vector/embeddings.db` | `${FORGE_PATH_VECTOR_EMBED_DB}` | `<object_prefix>/vector/embeddings` | age (Litestream) | Auto-restore on `forge vector serve` startup | Partially implemented (restore/replicate exists behind `-replication`) |
-| `vector/queue.db` | `${FORGE_PATH_VECTOR_QUEUE_DB}` | S3 replica path (parallel to embeddings DB) | age (Litestream) | Auto-restore on `forge vector serve` startup | Planned |
+| `vector/embeddings.db` | `${FORGE_PATH_VECTOR_EMBED_DB}` | `<object_prefix>/vector/embeddings` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
+| `vector/queue.db` | `${FORGE_PATH_VECTOR_QUEUE_DB}` | `<object_prefix>/vector/queue` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
 | `embeddings.db` (hydrated ingest cache) | `${FORGE_PATH_VECTOR_HYDRATED_DB}` | Hydrated from embeddings replica stream | none (local cache) | Refreshed before/for ingest lookup prechecks | Planned |
 | `blob.db` | `${FORGE_PATH_BLOB_DB}` | none | n/a | Local-only metadata DB | Implemented local-only |
 | `refs.db` | `${FORGE_DATA_DIR}/refs.db` (planned) | `<object_prefix>/gc/node-refs/<node_id>/refs.db` | none | Restored by workers/clients that need node refs state | Planned |
@@ -41,7 +41,7 @@ This document captures the planned S3-only replication model for Forge.
 
 ### 2. Vector Service Replication
 
-- Remove `-replication`; replication becomes default for `forge vector serve`.
+- `forge vector serve` uses replication by default (no `-replication` flag).
 - On startup:
   - acquire writer lease first
   - restore `vector/embeddings.db`

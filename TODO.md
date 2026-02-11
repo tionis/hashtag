@@ -13,11 +13,11 @@
 
 ### Phase 1: Vector Service Replication Defaults
 
-- [ ] Remove `forge vector serve -replication`; make replication/restore default behavior.
-- [ ] Restore both `${FORGE_PATH_VECTOR_EMBED_DB}` and `${FORGE_PATH_VECTOR_QUEUE_DB}` on service startup.
-- [ ] Acquire writer lease before entering write-serving mode.
-- [ ] Keep lease renewal/fencing active during runtime; stop write-serving on lease loss.
-- [ ] Stream both vector DBs continuously with Litestream.
+- [x] Remove `forge vector serve -replication`; make replication/restore default behavior.
+- [x] Restore both `${FORGE_PATH_VECTOR_EMBED_DB}` and `${FORGE_PATH_VECTOR_QUEUE_DB}` on service startup.
+- [x] Acquire writer lease before entering write-serving mode.
+- [x] Keep lease renewal/fencing active during runtime; stop write-serving on lease loss.
+- [x] Stream both vector DBs continuously with Litestream.
 
 ### Phase 2: Ingest Hydration
 

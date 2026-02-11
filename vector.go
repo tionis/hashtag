@@ -21,7 +21,6 @@ import (
 func runVectorServeCommand(args []string) error {
 	fs := flag.NewFlagSet("vector serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
-	enableReplication := fs.Bool("replication", false, "Enable remote replication setup via forge remote config")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "Usage: %s vector serve\n\n", os.Args[0])
 		fmt.Fprintln(fs.Output(), "Run the Forge vector coordinator service.")
@@ -33,7 +32,7 @@ func runVectorServeCommand(args []string) error {
 		fmt.Fprintln(fs.Output(), "\nLocal storage environment overrides:")
 		fmt.Fprintf(fs.Output(), "  %s, %s, %s\n", forgeconfig.EnvVectorEmbedDBPath, forgeconfig.EnvVectorQueueDBPath, forgeconfig.EnvVectorTempDir)
 		fmt.Fprintf(fs.Output(), "  %s, %s\n", forgeconfig.EnvBlobDBPath, forgeconfig.EnvBlobCacheDir)
-		fmt.Fprintln(fs.Output(), "\nReplication is disabled by default. Enable with -replication.")
+		fmt.Fprintln(fs.Output(), "\nVector serve uses remote replication by default and requires remote backend config.")
 	}
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -57,15 +56,15 @@ func runVectorServeCommand(args []string) error {
 	runCtx := ctx
 	cancelRun := func() {}
 
-	if *enableReplication {
-		setup, err := configureVectorReplicationFromRemoteConfig(ctx, &cfg)
-		if err != nil {
-			return err
-		}
-		lease, err = acquireVectorWriterLease(ctx, logger, setup.Bootstrap, setup.Config)
-		if err != nil {
-			return err
-		}
+	setup, err := configureVectorReplicationFromRemoteConfig(ctx, &cfg)
+	if err != nil {
+		return err
+	}
+	lease, err = acquireVectorWriterLease(ctx, logger, setup.Bootstrap, setup.Config)
+	if err != nil {
+		return err
+	}
+	if lease != nil {
 		replicationCtx, replicationCancel := context.WithCancel(ctx)
 		runCtx = replicationCtx
 		cancelRun = replicationCancel
@@ -277,11 +276,11 @@ func buildVectorReplicaURL(bootstrap remoteS3Bootstrap, cfg remoteGlobalConfig) 
 	}
 
 	base := normalizeS3Prefix(cfg.S3.ObjectPrefix)
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 2)
 	if base != "" {
 		parts = append(parts, base)
 	}
-	parts = append(parts, "vector", "embeddings")
+	parts = append(parts, "vector")
 
 	u := &url.URL{
 		Scheme: "s3",
