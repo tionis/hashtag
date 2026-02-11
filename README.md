@@ -384,7 +384,7 @@ Blob notes:
 - Remote objects are written under a deterministic key layout derived from global remote config.
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - `blob gc` is local-only and does not remove remote objects.
-- node refs publishing is being replaced by Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.
+- node refs use Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.
 - `blob put` and `blob get` upsert local keep refs (`blob.local.keep`) in `refs.db`; local `blob rm` removes them.
 - `blob gc` refreshes derived refs (`snapshot.tree_entries`, `vector.queue`) in `refs.db` and prunes stale local keep refs for deleted CIDs.
 - remote inventory cache flow uses GC generations: workers publish immutable `inventory.db` snapshots and a `gc_info` pointer; clients hydrate `${FORGE_PATH_S3_BLOBS_DB}` per generation and keep local discoveries/uploads in `${FORGE_PATH_S3_BLOBS_OVERLAY_DB}`.

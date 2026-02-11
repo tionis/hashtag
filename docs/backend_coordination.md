@@ -87,7 +87,7 @@ Current vector behavior:
 - upload payloads are staged locally and stored in local blob cache by CID
 - vector queue stores payload CID refs
 - worker reads payloads locally by CID
-- only `embeddings.db` is replicated to S3 (when enabled)
+- both `embeddings.db` and `queue.db` are restored/replicated by `forge vector serve` with lease enforcement
 
 Policy:
 

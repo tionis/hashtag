@@ -1,5 +1,20 @@
 # TODO
 
+## P0 CRITICAL: Fix Blob Confidentiality Model (Blocking)
+
+- [ ] Treat current convergent blob mode as confidentiality-broken until fixed.
+- [ ] Remove plaintext CID from encrypted blob payload/header format.
+- [ ] Stop deriving remote decryption material from public/plaintext identifiers alone.
+- [ ] Redesign key derivation so remote blob read access does not imply decrypt access.
+- [ ] Stop exposing plaintext CID in replicated pinsets/refs metadata.
+- [ ] Decide and implement one of:
+  - `refs.db` encrypted replication, or
+  - OID-only replicated refs (no plaintext CID exposure), or
+  - both.
+- [ ] Add migration tooling for existing encrypted blobs + refs data.
+- [ ] Add threat-model documentation for the final encryption design.
+- [ ] Mark this as release-blocking for any "encrypted remote blobs" claim.
+
 ## S3 Replication and Hydration Roadmap
 
 ### Path Conventions
