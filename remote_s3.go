@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"io"
@@ -33,6 +32,8 @@ type s3BlobRemoteStore struct {
 	cfg       remoteGlobalConfig
 }
 
+var errRemoteConfigNotFound = stderrors.New("remote config object not found")
+
 func newS3ClientFromBootstrap(ctx context.Context, bootstrap remoteS3Bootstrap) (*s3.Client, error) {
 	return newS3ClientFromBootstrapWithResponseChecksumValidation(ctx, bootstrap, aws.ResponseChecksumValidationWhenRequired)
 }
@@ -60,7 +61,7 @@ func newS3ClientFromBootstrapWithResponseChecksumValidation(ctx context.Context,
 	}), nil
 }
 
-func loadRemoteGlobalConfigFromS3(ctx context.Context, client *s3.Client, bootstrap remoteS3Bootstrap) (remoteGlobalConfig, string, error) {
+func loadRemoteConfigObjectFromS3(ctx context.Context, client *s3.Client, bootstrap remoteS3Bootstrap) ([]byte, string, error) {
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(bootstrap.Bucket),
 		Key:    aws.String(bootstrap.ConfigKey),
@@ -68,31 +69,33 @@ func loadRemoteGlobalConfigFromS3(ctx context.Context, client *s3.Client, bootst
 	resp, err := client.GetObject(ctx, input)
 	if err != nil {
 		if isS3NotFound(err) {
-			return remoteGlobalConfig{}, "", fmt.Errorf("remote config object s3://%s/%s not found (run `forge remote config init` first)", bootstrap.Bucket, bootstrap.ConfigKey)
+			return nil, "", fmt.Errorf("%w: s3://%s/%s (run `forge remote config init` first)", errRemoteConfigNotFound, bootstrap.Bucket, bootstrap.ConfigKey)
 		}
-		return remoteGlobalConfig{}, "", fmt.Errorf("read remote config object s3://%s/%s: %w", bootstrap.Bucket, bootstrap.ConfigKey, err)
+		return nil, "", fmt.Errorf("read remote config object s3://%s/%s: %w", bootstrap.Bucket, bootstrap.ConfigKey, err)
 	}
 	defer resp.Body.Close()
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return remoteGlobalConfig{}, "", fmt.Errorf("read remote config payload: %w", err)
-	}
-	cfg, err := decodeAndValidateRemoteGlobalConfig(payload, bootstrap)
-	if err != nil {
-		return remoteGlobalConfig{}, "", err
+		return nil, "", fmt.Errorf("read remote config payload: %w", err)
 	}
 	etag := strings.Trim(strings.TrimSpace(aws.ToString(resp.ETag)), "\"")
-	return cfg, etag, nil
+	return payload, etag, nil
 }
 
-func putRemoteGlobalConfigToS3(ctx context.Context, client *s3.Client, bootstrap remoteS3Bootstrap, cfg remoteGlobalConfig, overwrite bool, supportsIfNoneMatch bool) (string, error) {
-	payload, err := json.MarshalIndent(cfg, "", "  ")
+func loadRemoteGlobalConfigFromS3(ctx context.Context, client *s3.Client, bootstrap remoteS3Bootstrap) (remoteGlobalConfig, remoteSignedDocumentMetadata, string, error) {
+	payload, etag, err := loadRemoteConfigObjectFromS3(ctx, client, bootstrap)
 	if err != nil {
-		return "", fmt.Errorf("marshal remote config JSON: %w", err)
+		return remoteGlobalConfig{}, remoteSignedDocumentMetadata{}, "", err
 	}
-	payload = append(payload, '\n')
+	cfg, trustMeta, err := decodeAndValidateSignedRemoteGlobalConfig(payload, bootstrap)
+	if err != nil {
+		return remoteGlobalConfig{}, remoteSignedDocumentMetadata{}, "", fmt.Errorf("verify remote config object s3://%s/%s: %w", bootstrap.Bucket, bootstrap.ConfigKey, err)
+	}
+	return cfg, trustMeta, etag, nil
+}
 
+func putRemoteGlobalConfigDocumentToS3(ctx context.Context, client *s3.Client, bootstrap remoteS3Bootstrap, payload []byte, overwrite bool, supportsIfNoneMatch bool) (string, error) {
 	input := &s3.PutObjectInput{
 		Bucket:      aws.String(bootstrap.Bucket),
 		Key:         aws.String(bootstrap.ConfigKey),

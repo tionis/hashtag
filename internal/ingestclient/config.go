@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/tionis/forge/internal/forgeconfig"
 )
 
 // Config controls ingestion client runtime behavior.
@@ -97,17 +99,5 @@ func isSupportedKind(kind string) bool {
 }
 
 func defaultHydratedDBPath() string {
-	if custom := strings.TrimSpace(os.Getenv("FORGE_VECTOR_HYDRATED_DB")); custom != "" {
-		return custom
-	}
-
-	dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "./embeddings.db"
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dataHome, "forge", "embeddings.db")
+	return forgeconfig.VectorHydratedDBPath()
 }

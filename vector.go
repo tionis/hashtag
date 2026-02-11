@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tionis/forge/internal/forgeconfig"
 	"github.com/tionis/forge/internal/ingestclient"
 	"github.com/tionis/forge/internal/vectorforge"
 )
@@ -28,8 +29,8 @@ func runVectorServeCommand(args []string) error {
 		fmt.Fprintln(fs.Output(), "  LISTEN_ADDR, IMAGE_WORKER_URL, TEXT_WORKER_URL, WORKER_CONCURRENCY,")
 		fmt.Fprintln(fs.Output(), "  LOOKUP_CHUNK_SIZE, QUEUE_ACK_TIMEOUT_MS, MAX_PENDING_JOBS, MAX_JOB_ATTEMPTS")
 		fmt.Fprintln(fs.Output(), "\nLocal storage environment overrides:")
-		fmt.Fprintln(fs.Output(), "  FORGE_VECTOR_EMBED_DB, FORGE_VECTOR_QUEUE_DB, FORGE_VECTOR_TEMP_DIR")
-		fmt.Fprintln(fs.Output(), "  FORGE_BLOB_DB, FORGE_BLOB_CACHE")
+		fmt.Fprintf(fs.Output(), "  %s, %s, %s\n", forgeconfig.EnvVectorEmbedDBPath, forgeconfig.EnvVectorQueueDBPath, forgeconfig.EnvVectorTempDir)
+		fmt.Fprintf(fs.Output(), "  %s, %s\n", forgeconfig.EnvBlobDBPath, forgeconfig.EnvBlobCacheDir)
 		fmt.Fprintln(fs.Output(), "\nReplication is disabled by default. Enable with -replication.")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -268,10 +269,7 @@ func renderVectorLeaseStatusOutput(mode string, output vectorLeaseStatusOutput) 
 }
 
 func buildVectorReplicaURL(bootstrap remoteS3Bootstrap, cfg remoteGlobalConfig) (string, error) {
-	bucket := strings.TrimSpace(cfg.S3.Bucket)
-	if bucket == "" {
-		bucket = strings.TrimSpace(bootstrap.Bucket)
-	}
+	bucket := strings.TrimSpace(bootstrap.Bucket)
 	if bucket == "" {
 		return "", fmt.Errorf("vector replication requires bucket configuration")
 	}

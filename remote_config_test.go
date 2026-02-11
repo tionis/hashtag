@@ -41,7 +41,6 @@ func TestNormalizeAndValidateRemoteGlobalConfig(t *testing.T) {
 		ConfigKey: "forge/config.json",
 	}
 	cfg := defaultRemoteGlobalConfig()
-	cfg.S3.Bucket = "bucket-a"
 	cfg.S3.ObjectPrefix = "/forge-data/"
 	cfg.S3.BlobPrefix = "/blob-store/"
 	cfg.Cache.RemoteConfigTTLSeconds = 0
@@ -69,11 +68,6 @@ func TestNormalizeAndValidateRemoteGlobalConfig(t *testing.T) {
 	if cfg.Coordination.VectorWriterLease.RenewIntervalSeconds != defaultVectorLeaseRenewIntervalSeconds {
 		t.Fatalf("expected default lease renew interval %d, got %d", defaultVectorLeaseRenewIntervalSeconds, cfg.Coordination.VectorWriterLease.RenewIntervalSeconds)
 	}
-
-	cfg.Policy.EncryptNonConfigData = false
-	if err := normalizeAndValidateRemoteGlobalConfig(&cfg, bootstrap); err == nil {
-		t.Fatal("expected encryption policy=false to fail validation")
-	}
 }
 
 func TestNormalizeAndValidateRemoteGlobalConfigLeaseValidation(t *testing.T) {
@@ -82,7 +76,6 @@ func TestNormalizeAndValidateRemoteGlobalConfigLeaseValidation(t *testing.T) {
 		ConfigKey: "forge/config.json",
 	}
 	cfg := defaultRemoteGlobalConfig()
-	cfg.S3.Bucket = "bucket-a"
 	cfg.S3.Capabilities = remoteS3Capabilities{
 		ConditionalIfNoneMatch: true,
 		ConditionalIfMatch:     false,
@@ -93,7 +86,6 @@ func TestNormalizeAndValidateRemoteGlobalConfigLeaseValidation(t *testing.T) {
 	}
 
 	cfg = defaultRemoteGlobalConfig()
-	cfg.S3.Bucket = "bucket-a"
 	cfg.Coordination.VectorWriterLease.Mode = vectorLeaseModeSoft
 	cfg.Coordination.VectorWriterLease.DurationSeconds = 10
 	cfg.Coordination.VectorWriterLease.RenewIntervalSeconds = 10

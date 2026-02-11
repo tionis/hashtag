@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"flag"
 	"fmt"
 	"os"
@@ -20,21 +21,19 @@ const (
 	forgeS3SessionTokenEnv    = "FORGE_S3_SESSION_TOKEN"
 	forgeS3ForcePathStyleEnv  = "FORGE_S3_FORCE_PATH_STYLE"
 	forgeRemoteConfigKeyEnv   = "FORGE_REMOTE_CONFIG_KEY"
-	forgeRemoteDBEnv          = "FORGE_REMOTE_DB"
 
 	remoteConfigVersion = 1
 
 	defaultRemoteConfigKey             = "forge/config.json"
-	defaultRemoteDBFile                = "remote.db"
 	defaultS3ObjectPrefix              = "forge"
 	defaultS3BlobKeyPrefix             = "blobs"
 	defaultS3BackendName               = "s3"
 	defaultS3Region                    = "us-east-1"
-	defaultEncryptNonConfig            = true
 	defaultRemoteConfigCacheTTLSeconds = 300
 	defaultCapabilityIfNone            = true
 	defaultCapabilityIfMatch           = false
 	defaultCapabilityResponseChecksums = false
+	defaultRemoteDocExpiresSeconds     = 0
 
 	defaultVectorLeaseMode                 = "auto"
 	defaultVectorLeaseResource             = "vector/embeddings-writer"
@@ -57,9 +56,9 @@ type remoteGlobalConfig struct {
 	Version      int                      `json:"version"`
 	UpdatedAt    string                   `json:"updated_at,omitempty"`
 	Cache        remoteGlobalCache        `json:"cache"`
-	Policy       remoteGlobalPolicy       `json:"policy"`
 	S3           remoteGlobalS3Config     `json:"s3"`
 	Coordination remoteGlobalCoordination `json:"coordination"`
+	Trust        remoteGlobalTrustConfig  `json:"trust,omitempty"`
 	Notes        map[string]string        `json:"notes,omitempty"`
 }
 
@@ -67,12 +66,7 @@ type remoteGlobalCache struct {
 	RemoteConfigTTLSeconds int `json:"remote_config_ttl_seconds"`
 }
 
-type remoteGlobalPolicy struct {
-	EncryptNonConfigData bool `json:"encrypt_non_config_data"`
-}
-
 type remoteGlobalS3Config struct {
-	Bucket       string               `json:"bucket,omitempty"`
 	ObjectPrefix string               `json:"object_prefix"`
 	BlobPrefix   string               `json:"blob_prefix"`
 	Capabilities remoteS3Capabilities `json:"capabilities"`
@@ -96,17 +90,25 @@ type remoteVectorWriterLeaseConfig struct {
 }
 
 type remoteConfigInitOutput struct {
-	Bucket    string             `json:"bucket"`
-	ConfigKey string             `json:"config_key"`
-	ETag      string             `json:"etag,omitempty"`
-	Config    remoteGlobalConfig `json:"config"`
+	Bucket            string             `json:"bucket"`
+	ConfigKey         string             `json:"config_key"`
+	ETag              string             `json:"etag,omitempty"`
+	DocumentVersion   int64              `json:"document_version"`
+	SignerFingerprint string             `json:"signer_fingerprint"`
+	PayloadHash       string             `json:"payload_hash"`
+	ExpiresAtUTC      string             `json:"expires_at_utc,omitempty"`
+	Config            remoteGlobalConfig `json:"config"`
 }
 
 type remoteConfigShowOutput struct {
-	Bucket    string             `json:"bucket"`
-	ConfigKey string             `json:"config_key"`
-	ETag      string             `json:"etag,omitempty"`
-	Config    remoteGlobalConfig `json:"config"`
+	Bucket            string             `json:"bucket"`
+	ConfigKey         string             `json:"config_key"`
+	ETag              string             `json:"etag,omitempty"`
+	DocumentVersion   int64              `json:"document_version"`
+	SignerFingerprint string             `json:"signer_fingerprint"`
+	PayloadHash       string             `json:"payload_hash"`
+	ExpiresAtUTC      string             `json:"expires_at_utc,omitempty"`
+	Config            remoteGlobalConfig `json:"config"`
 }
 
 func runRemoteConfigInitCommand(args []string) error {
@@ -123,7 +125,6 @@ func runRemoteConfigInitCommand(args []string) error {
 	objectPrefix := fs.String("object-prefix", defaultS3ObjectPrefix, "Global object prefix for Forge data in the bucket")
 	blobPrefix := fs.String("blob-prefix", defaultS3BlobKeyPrefix, "Blob object prefix under object-prefix")
 	configCacheTTL := fs.Int("config-cache-ttl", defaultRemoteConfigCacheTTLSeconds, "Local remote-config cache TTL in seconds")
-	encryptNonConfig := fs.Bool("encrypt-non-config", defaultEncryptNonConfig, "Whether non-config data must be encrypted")
 	probeCapabilities := fs.Bool("probe-capabilities", true, "Probe S3 capability flags on the target bucket")
 	capIfNone := fs.Bool("cap-if-none-match", defaultCapabilityIfNone, "Manual If-None-Match support value (used when -probe-capabilities=false)")
 	capIfMatch := fs.Bool("cap-if-match", defaultCapabilityIfMatch, "Manual If-Match support value (used when -probe-capabilities=false)")
@@ -132,6 +133,11 @@ func runRemoteConfigInitCommand(args []string) error {
 	vectorLeaseResource := fs.String("vector-lease-resource", defaultVectorLeaseResource, "Vector writer lease resource key")
 	vectorLeaseDuration := fs.Int("vector-lease-duration", defaultVectorLeaseDurationSeconds, "Vector writer lease duration in seconds")
 	vectorLeaseRenewInterval := fs.Int("vector-lease-renew-interval", defaultVectorLeaseRenewIntervalSeconds, "Vector writer lease renew interval in seconds")
+	signingKeyPath := fs.String("signing-key", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyEnv)), "Path to OpenSSH private key used to sign remote config document")
+	documentVersion := fs.Int64("doc-version", 0, "Signed document version (default: auto)")
+	documentExpiresSeconds := fs.Int("doc-expires-seconds", defaultRemoteDocExpiresSeconds, "Optional signed document expiry in seconds (0 means no expiry)")
+	trustNodesFile := fs.String("trust-nodes-file", "", "Optional path to trust nodes JSON file (array or object with \"nodes\")")
+	rootNodeName := fs.String("root-node-name", defaultRemoteRootNodeName, "Node name for signing root key in trust map")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -155,17 +161,34 @@ func runRemoteConfigInitCommand(args []string) error {
 		return err
 	}
 
+	signer, signerAuthorized, _, err := loadRemoteSigningKey(*signingKeyPath)
+	if err != nil {
+		return err
+	}
+	extraTrustNodes, err := loadRemoteTrustNodesFromFile(*trustNodesFile)
+	if err != nil {
+		return err
+	}
+
 	cfg := defaultRemoteGlobalConfig()
 	cfg.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	cfg.S3.Bucket = bootstrap.Bucket
 	cfg.S3.ObjectPrefix = normalizeS3Prefix(*objectPrefix)
 	cfg.S3.BlobPrefix = normalizeS3Prefix(*blobPrefix)
 	cfg.Cache.RemoteConfigTTLSeconds = *configCacheTTL
-	cfg.Policy.EncryptNonConfigData = *encryptNonConfig
 	cfg.Coordination.VectorWriterLease.Mode = strings.ToLower(strings.TrimSpace(*vectorLeaseMode))
 	cfg.Coordination.VectorWriterLease.Resource = normalizeS3ObjectKey(*vectorLeaseResource)
 	cfg.Coordination.VectorWriterLease.DurationSeconds = *vectorLeaseDuration
 	cfg.Coordination.VectorWriterLease.RenewIntervalSeconds = *vectorLeaseRenewInterval
+	nodeName := strings.TrimSpace(*rootNodeName)
+	if nodeName == "" {
+		nodeName = defaultRemoteRootNodeName
+	}
+	cfg.Trust.Nodes = append(cfg.Trust.Nodes, remoteTrustNode{
+		Name:      nodeName,
+		PublicKey: signerAuthorized,
+		Roles:     []string{"root"},
+	})
+	cfg.Trust.Nodes = append(cfg.Trust.Nodes, extraTrustNodes...)
 	if *probeCapabilities {
 		caps, err := detectRemoteS3Capabilities(ctx, client, bootstrap)
 		if err != nil {
@@ -181,19 +204,44 @@ func runRemoteConfigInitCommand(args []string) error {
 		return err
 	}
 
-	etag, err := putRemoteGlobalConfigToS3(ctx, client, bootstrap, cfg, *overwrite, cfg.S3.Capabilities.ConditionalIfNoneMatch)
+	resolvedDocVersion := *documentVersion
+	if resolvedDocVersion <= 0 {
+		resolvedDocVersion = time.Now().UTC().UnixNano()
+		existingRaw, _, fetchErr := loadRemoteConfigObjectFromS3(ctx, client, bootstrap)
+		if fetchErr == nil {
+			if existingVersion, ok := extractSignedDocumentVersion(existingRaw); ok && existingVersion >= resolvedDocVersion {
+				resolvedDocVersion = existingVersion + 1
+			}
+		} else if !stderrors.Is(fetchErr, errRemoteConfigNotFound) {
+			return fmt.Errorf("inspect existing remote config for versioning: %w", fetchErr)
+		}
+	}
+	var expiresAt *time.Time
+	if *documentExpiresSeconds > 0 {
+		candidate := time.Now().UTC().Add(time.Duration(*documentExpiresSeconds) * time.Second)
+		expiresAt = &candidate
+	}
+	docPayload, trustMeta, err := createSignedRemoteConfigDocument(cfg, signer, resolvedDocVersion, time.Now().UTC(), expiresAt)
 	if err != nil {
 		return err
 	}
-	if err := upsertRemoteConfigCache(bootstrap, cfg, etag, time.Now().UTC()); err != nil {
+	etag, err := putRemoteGlobalConfigDocumentToS3(ctx, client, bootstrap, docPayload, *overwrite, cfg.S3.Capabilities.ConditionalIfNoneMatch)
+	if err != nil {
+		return err
+	}
+	if err := upsertRemoteConfigCache(bootstrap, cfg, etag, trustMeta, time.Now().UTC()); err != nil {
 		return err
 	}
 
 	return renderRemoteConfigInitOutput(resolvedOutputMode, remoteConfigInitOutput{
-		Bucket:    bootstrap.Bucket,
-		ConfigKey: bootstrap.ConfigKey,
-		ETag:      etag,
-		Config:    cfg,
+		Bucket:            bootstrap.Bucket,
+		ConfigKey:         bootstrap.ConfigKey,
+		ETag:              etag,
+		DocumentVersion:   trustMeta.Version,
+		SignerFingerprint: trustMeta.SignerFingerprint,
+		PayloadHash:       trustMeta.PayloadHash,
+		ExpiresAtUTC:      trustMeta.ExpiresAtUTC,
+		Config:            cfg,
 	})
 }
 
@@ -229,19 +277,23 @@ func runRemoteConfigShowCommand(args []string) error {
 		return err
 	}
 
-	cfg, etag, err := loadRemoteGlobalConfigFromS3(ctx, client, bootstrap)
+	cfg, trustMeta, etag, err := loadRemoteGlobalConfigFromS3(ctx, client, bootstrap)
 	if err != nil {
 		return err
 	}
-	if err := upsertRemoteConfigCache(bootstrap, cfg, etag, time.Now().UTC()); err != nil {
+	if err := upsertRemoteConfigCache(bootstrap, cfg, etag, trustMeta, time.Now().UTC()); err != nil {
 		return err
 	}
 
 	return renderRemoteConfigShowOutput(resolvedOutputMode, remoteConfigShowOutput{
-		Bucket:    bootstrap.Bucket,
-		ConfigKey: bootstrap.ConfigKey,
-		ETag:      etag,
-		Config:    cfg,
+		Bucket:            bootstrap.Bucket,
+		ConfigKey:         bootstrap.ConfigKey,
+		ETag:              etag,
+		DocumentVersion:   trustMeta.Version,
+		SignerFingerprint: trustMeta.SignerFingerprint,
+		PayloadHash:       trustMeta.PayloadHash,
+		ExpiresAtUTC:      trustMeta.ExpiresAtUTC,
+		Config:            cfg,
 	})
 }
 
@@ -295,9 +347,6 @@ func defaultRemoteGlobalConfig() remoteGlobalConfig {
 		Cache: remoteGlobalCache{
 			RemoteConfigTTLSeconds: defaultRemoteConfigCacheTTLSeconds,
 		},
-		Policy: remoteGlobalPolicy{
-			EncryptNonConfigData: defaultEncryptNonConfig,
-		},
 		S3: remoteGlobalS3Config{
 			ObjectPrefix: defaultS3ObjectPrefix,
 			BlobPrefix:   defaultS3BlobKeyPrefix,
@@ -333,15 +382,6 @@ func normalizeAndValidateRemoteGlobalConfig(cfg *remoteGlobalConfig, bootstrap r
 	if cfg.Cache.RemoteConfigTTLSeconds <= 0 {
 		cfg.Cache.RemoteConfigTTLSeconds = defaultRemoteConfigCacheTTLSeconds
 	}
-	if strings.TrimSpace(cfg.S3.Bucket) == "" {
-		cfg.S3.Bucket = bootstrap.Bucket
-	}
-	if strings.TrimSpace(cfg.S3.Bucket) != bootstrap.Bucket {
-		return fmt.Errorf("remote config bucket mismatch: config=%q bootstrap=%q", cfg.S3.Bucket, bootstrap.Bucket)
-	}
-	if cfg.Policy.EncryptNonConfigData != true {
-		return fmt.Errorf("remote config policy requires policy.encrypt_non_config_data=true")
-	}
 	lease := &cfg.Coordination.VectorWriterLease
 	lease.Mode = strings.ToLower(strings.TrimSpace(lease.Mode))
 	if lease.Mode == "" {
@@ -368,6 +408,11 @@ func normalizeAndValidateRemoteGlobalConfig(cfg *remoteGlobalConfig, bootstrap r
 	if lease.RenewIntervalSeconds >= lease.DurationSeconds {
 		return fmt.Errorf("coordination.vector_writer_lease.renew_interval_seconds (%d) must be less than duration_seconds (%d)", lease.RenewIntervalSeconds, lease.DurationSeconds)
 	}
+	normalizedNodes, err := normalizeAndValidateRemoteTrustNodes(cfg.Trust.Nodes)
+	if err != nil {
+		return err
+	}
+	cfg.Trust.Nodes = normalizedNodes
 	return nil
 }
 
@@ -392,6 +437,10 @@ func renderRemoteConfigInitOutput(mode string, output remoteConfigInitOutput) er
 		fmt.Printf("bucket=%s\n", output.Bucket)
 		fmt.Printf("config_key=%s\n", output.ConfigKey)
 		fmt.Printf("etag=%s\n", output.ETag)
+		fmt.Printf("document_version=%d\n", output.DocumentVersion)
+		fmt.Printf("signer_fingerprint=%s\n", output.SignerFingerprint)
+		fmt.Printf("payload_hash=%s\n", output.PayloadHash)
+		fmt.Printf("expires_at_utc=%s\n", output.ExpiresAtUTC)
 		cfgBytes, _ := json.Marshal(output.Config)
 		fmt.Printf("config_json=%s\n", string(cfgBytes))
 		return nil
@@ -404,6 +453,10 @@ func renderRemoteConfigInitOutput(mode string, output remoteConfigInitOutput) er
 			{Label: "Bucket", Value: output.Bucket},
 			{Label: "Config Key", Value: output.ConfigKey},
 			{Label: "ETag", Value: output.ETag},
+			{Label: "Doc Version", Value: strconv.FormatInt(output.DocumentVersion, 10)},
+			{Label: "Signer Fingerprint", Value: output.SignerFingerprint},
+			{Label: "Payload Hash", Value: output.PayloadHash},
+			{Label: "Expires At", Value: output.ExpiresAtUTC},
 		})
 		cfg, _ := json.MarshalIndent(output.Config, "", "  ")
 		printPrettySection("Config")
@@ -420,6 +473,10 @@ func renderRemoteConfigShowOutput(mode string, output remoteConfigShowOutput) er
 		fmt.Printf("bucket=%s\n", output.Bucket)
 		fmt.Printf("config_key=%s\n", output.ConfigKey)
 		fmt.Printf("etag=%s\n", output.ETag)
+		fmt.Printf("document_version=%d\n", output.DocumentVersion)
+		fmt.Printf("signer_fingerprint=%s\n", output.SignerFingerprint)
+		fmt.Printf("payload_hash=%s\n", output.PayloadHash)
+		fmt.Printf("expires_at_utc=%s\n", output.ExpiresAtUTC)
 		cfgBytes, _ := json.Marshal(output.Config)
 		fmt.Printf("config_json=%s\n", string(cfgBytes))
 		return nil
@@ -432,6 +489,10 @@ func renderRemoteConfigShowOutput(mode string, output remoteConfigShowOutput) er
 			{Label: "Bucket", Value: output.Bucket},
 			{Label: "Config Key", Value: output.ConfigKey},
 			{Label: "ETag", Value: output.ETag},
+			{Label: "Doc Version", Value: strconv.FormatInt(output.DocumentVersion, 10)},
+			{Label: "Signer Fingerprint", Value: output.SignerFingerprint},
+			{Label: "Payload Hash", Value: output.PayloadHash},
+			{Label: "Expires At", Value: output.ExpiresAtUTC},
 		})
 		cfg, _ := json.MarshalIndent(output.Config, "", "  ")
 		printPrettySection("Config")

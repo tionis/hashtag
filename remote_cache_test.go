@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tionis/forge/internal/forgeconfig"
 )
 
 func TestDefaultRemoteDBPathUsesEnv(t *testing.T) {
-	t.Setenv(forgeRemoteDBEnv, "/tmp/forge-remote-test.db")
+	t.Setenv(forgeconfig.EnvRemoteDBPath, "/tmp/forge-remote-test.db")
 	if got := defaultRemoteDBPath(); got != "/tmp/forge-remote-test.db" {
 		t.Fatalf("expected remote db path from env, got %q", got)
 	}
@@ -16,7 +18,7 @@ func TestDefaultRemoteDBPathUsesEnv(t *testing.T) {
 
 func TestLoadRemoteGlobalConfigWithCache(t *testing.T) {
 	temp := t.TempDir()
-	t.Setenv(forgeRemoteDBEnv, filepath.Join(temp, "remote.db"))
+	t.Setenv(forgeconfig.EnvRemoteDBPath, filepath.Join(temp, "remote.db"))
 
 	bootstrap := remoteS3Bootstrap{
 		Bucket:    "bucket-a",
@@ -24,13 +26,21 @@ func TestLoadRemoteGlobalConfigWithCache(t *testing.T) {
 		ConfigKey: "forge/config.json",
 	}
 	fetchCalls := 0
-	fetch := func(_ context.Context, _ remoteS3Bootstrap) (remoteGlobalConfig, string, error) {
+	fetch := func(_ context.Context, _ remoteS3Bootstrap) (remoteGlobalConfigFetchResult, error) {
 		fetchCalls++
 		cfg := defaultRemoteGlobalConfig()
-		cfg.S3.Bucket = "bucket-a"
 		cfg.Cache.RemoteConfigTTLSeconds = 3600
 		cfg.S3.ObjectPrefix = "forge-a"
-		return cfg, "etag-a", nil
+		return remoteGlobalConfigFetchResult{
+			Config: cfg,
+			ETag:   "etag-a",
+			Trust: remoteSignedDocumentMetadata{
+				DocumentType:      remoteDocumentTypeConfig,
+				Version:           1,
+				PayloadHash:       "hash-a",
+				SignerFingerprint: "fp-a",
+			},
+		}, nil
 	}
 
 	firstCfg, firstETag, err := loadRemoteGlobalConfigWithCache(context.Background(), bootstrap, fetch)
@@ -64,7 +74,7 @@ func TestLoadRemoteGlobalConfigWithCache(t *testing.T) {
 
 func TestLoadRemoteGlobalConfigWithCacheRefreshOnExpiry(t *testing.T) {
 	temp := t.TempDir()
-	t.Setenv(forgeRemoteDBEnv, filepath.Join(temp, "remote.db"))
+	t.Setenv(forgeconfig.EnvRemoteDBPath, filepath.Join(temp, "remote.db"))
 
 	bootstrap := remoteS3Bootstrap{
 		Bucket:    "bucket-a",
@@ -72,17 +82,34 @@ func TestLoadRemoteGlobalConfigWithCacheRefreshOnExpiry(t *testing.T) {
 		ConfigKey: "forge/config.json",
 	}
 	fetchCalls := 0
-	fetch := func(_ context.Context, _ remoteS3Bootstrap) (remoteGlobalConfig, string, error) {
+	fetch := func(_ context.Context, _ remoteS3Bootstrap) (remoteGlobalConfigFetchResult, error) {
 		fetchCalls++
 		cfg := defaultRemoteGlobalConfig()
-		cfg.S3.Bucket = "bucket-a"
 		cfg.Cache.RemoteConfigTTLSeconds = 3600
 		if fetchCalls == 1 {
 			cfg.S3.ObjectPrefix = "forge-first"
-			return cfg, "etag-first", nil
+			return remoteGlobalConfigFetchResult{
+				Config: cfg,
+				ETag:   "etag-first",
+				Trust: remoteSignedDocumentMetadata{
+					DocumentType:      remoteDocumentTypeConfig,
+					Version:           2,
+					PayloadHash:       "hash-first",
+					SignerFingerprint: "fp-first",
+				},
+			}, nil
 		}
 		cfg.S3.ObjectPrefix = "forge-second"
-		return cfg, "etag-second", nil
+		return remoteGlobalConfigFetchResult{
+			Config: cfg,
+			ETag:   "etag-second",
+			Trust: remoteSignedDocumentMetadata{
+				DocumentType:      remoteDocumentTypeConfig,
+				Version:           3,
+				PayloadHash:       "hash-second",
+				SignerFingerprint: "fp-second",
+			},
+		}, nil
 	}
 
 	_, _, err := loadRemoteGlobalConfigWithCache(context.Background(), bootstrap, fetch)

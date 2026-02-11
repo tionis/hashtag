@@ -11,7 +11,6 @@ func TestBuildVectorReplicaURL(t *testing.T) {
 	}
 	cfg := remoteGlobalConfig{
 		S3: remoteGlobalS3Config{
-			Bucket:       "bucket-b",
 			ObjectPrefix: "forge-data",
 		},
 	}
@@ -21,7 +20,7 @@ func TestBuildVectorReplicaURL(t *testing.T) {
 		t.Fatalf("buildVectorReplicaURL error: %v", err)
 	}
 
-	expected := "s3://bucket-b/forge-data/vector/embeddings?endpoint=https%3A%2F%2Fs3.example.test&forcePathStyle=true&region=eu-central-2"
+	expected := "s3://bucket-a/forge-data/vector/embeddings?endpoint=https%3A%2F%2Fs3.example.test&forcePathStyle=true&region=eu-central-2"
 	if raw != expected {
 		t.Fatalf("replica URL mismatch:\n got: %s\nwant: %s", raw, expected)
 	}

@@ -3,16 +3,20 @@ package vectorforge
 import (
 	"strings"
 	"testing"
+
+	"github.com/tionis/forge/internal/forgeconfig"
 )
 
 func resetConfigParseEnv(t *testing.T) {
 	t.Helper()
 	keys := []string{
+		forgeconfig.EnvDataDir,
+		forgeconfig.EnvCacheDir,
 		"XDG_DATA_HOME",
 		"XDG_CACHE_HOME",
-		"FORGE_VECTOR_EMBED_DB",
-		"FORGE_VECTOR_QUEUE_DB",
-		"FORGE_VECTOR_TEMP_DIR",
+		forgeconfig.EnvVectorEmbedDBPath,
+		forgeconfig.EnvVectorQueueDBPath,
+		forgeconfig.EnvVectorTempDir,
 		"FORGE_VECTOR_REPLICA_RESTORE_ON_START",
 		"WORKER_URL",
 		"IMAGE_WORKER_URL",

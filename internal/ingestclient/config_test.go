@@ -3,10 +3,12 @@ package ingestclient
 import (
 	"strings"
 	"testing"
+
+	"github.com/tionis/forge/internal/forgeconfig"
 )
 
 func TestDefaultHydratedDBPathUsesXDGDataHome(t *testing.T) {
-	t.Setenv("FORGE_VECTOR_HYDRATED_DB", "")
+	t.Setenv(forgeconfig.EnvVectorHydratedDBPath, "")
 	t.Setenv("XDG_DATA_HOME", "/tmp/forge-ingest-data")
 
 	got := defaultHydratedDBPath()
@@ -17,7 +19,7 @@ func TestDefaultHydratedDBPathUsesXDGDataHome(t *testing.T) {
 }
 
 func TestDefaultHydratedDBPathOverride(t *testing.T) {
-	t.Setenv("FORGE_VECTOR_HYDRATED_DB", "/tmp/custom-hydrated.db")
+	t.Setenv(forgeconfig.EnvVectorHydratedDBPath, "/tmp/custom-hydrated.db")
 
 	got := defaultHydratedDBPath()
 	if got != "/tmp/custom-hydrated.db" {

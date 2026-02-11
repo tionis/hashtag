@@ -11,16 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tionis/forge/internal/forgeconfig"
 	"github.com/zeebo/blake3"
 	_ "modernc.org/sqlite"
 )
 
 const (
-	vectorBlobDBEnv           = "FORGE_BLOB_DB"
-	vectorBlobCacheEnv        = "FORGE_BLOB_CACHE"
-	vectorBlobDBDefaultFile   = "blob.db"
-	vectorBlobCacheDefaultDir = "blobs"
-
 	vectorBlobDigestHexSize = 64
 	vectorBlobDigestBytes   = 32
 	vectorBlobEncAlgorithm  = "xchacha20poly1305"
@@ -46,17 +42,11 @@ type blobMapCacheRow struct {
 }
 
 func defaultVectorBlobDBPath() string {
-	if custom := strings.TrimSpace(os.Getenv(vectorBlobDBEnv)); custom != "" {
-		return custom
-	}
-	return filepath.Join(defaultForgeDataDir(), vectorBlobDBDefaultFile)
+	return forgeconfig.BlobDBPath()
 }
 
 func defaultVectorBlobCacheDir() string {
-	if custom := strings.TrimSpace(os.Getenv(vectorBlobCacheEnv)); custom != "" {
-		return custom
-	}
-	return filepath.Join(defaultForgeCacheDir(), vectorBlobCacheDefaultDir)
+	return forgeconfig.BlobCacheDir()
 }
 
 func openLocalBlobPayloadStore(blobDBPath string, cacheDir string) (*localBlobPayloadStore, error) {

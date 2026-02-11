@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tionis/forge/internal/forgeconfig"
 	"github.com/zeebo/blake3"
 	_ "modernc.org/sqlite"
 )
@@ -30,10 +31,7 @@ const (
 	snapshotKindFile    = "file"
 	snapshotKindSymlink = "symlink"
 
-	snapshotHashAlgo      = "blake3"
-	snapshotDBEnv         = "FORGE_SNAPSHOT_DB"
-	snapshotDBDirName     = "forge"
-	snapshotDBDefaultFile = "snapshot.db"
+	snapshotHashAlgo = "blake3"
 
 	snapshotXDGTagsKey = "user.xdg.tags"
 
@@ -802,20 +800,7 @@ func snapshotRemotePath(remoteTarget string) string {
 }
 
 func defaultSnapshotDBPath() string {
-	if custom := os.Getenv(snapshotDBEnv); custom != "" {
-		return custom
-	}
-
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return snapshotDBDefaultFile
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-
-	return filepath.Join(dataHome, snapshotDBDirName, snapshotDBDefaultFile)
+	return forgeconfig.SnapshotDBPath()
 }
 
 func openSnapshotDB(path string) (*sql.DB, error) {

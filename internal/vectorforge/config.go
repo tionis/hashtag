@@ -3,10 +3,11 @@ package vectorforge
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tionis/forge/internal/forgeconfig"
 )
 
 // Config carries runtime settings for the VectorForge service.
@@ -148,46 +149,13 @@ func boolFromEnv(key string, fallback bool) (bool, error) {
 }
 
 func defaultEmbedDBPath() string {
-	if custom := strings.TrimSpace(os.Getenv("FORGE_VECTOR_EMBED_DB")); custom != "" {
-		return custom
-	}
-	return filepath.Join(defaultForgeDataDir(), "vector", "embeddings.db")
+	return forgeconfig.VectorEmbedDBPath()
 }
 
 func defaultQueueDBPath() string {
-	if custom := strings.TrimSpace(os.Getenv("FORGE_VECTOR_QUEUE_DB")); custom != "" {
-		return custom
-	}
-	return filepath.Join(defaultForgeDataDir(), "vector", "queue.db")
+	return forgeconfig.VectorQueueDBPath()
 }
 
 func defaultTempDir() string {
-	if custom := strings.TrimSpace(os.Getenv("FORGE_VECTOR_TEMP_DIR")); custom != "" {
-		return custom
-	}
-	return filepath.Join(defaultForgeCacheDir(), "vector", "tmp")
-}
-
-func defaultForgeDataDir() string {
-	dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	if dataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(".", "data")
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dataHome, "forge")
-}
-
-func defaultForgeCacheDir() string {
-	cacheHome := strings.TrimSpace(os.Getenv("XDG_CACHE_HOME"))
-	if cacheHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(".", "cache")
-		}
-		cacheHome = filepath.Join(home, ".cache")
-	}
-	return filepath.Join(cacheHome, "forge")
+	return forgeconfig.VectorTempDir()
 }

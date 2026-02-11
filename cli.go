@@ -83,6 +83,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newSnapshotCommand())
 	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newTagsCommand())
+	root.AddCommand(newConfigCommand())
 	root.AddCommand(newRemoteCommand())
 	root.AddCommand(newBlobCommand())
 	root.AddCommand(newVectorCommand())
@@ -351,6 +352,28 @@ func newRemoteCommand() *cobra.Command {
 	remoteCmd.AddCommand(configCmd)
 
 	return remoteCmd
+}
+
+func newConfigCommand() *cobra.Command {
+	configCmd := &cobra.Command{
+		Use:                "config",
+		Short:              "Inspect effective local and remote Forge configuration.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	configCmd.AddCommand(&cobra.Command{
+		Use:                "show [options]",
+		Short:              "Show effective config values resolved from env/defaults and remote state.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigShowCommand(args)
+		},
+	})
+
+	return configCmd
 }
 
 func newVectorCommand() *cobra.Command {

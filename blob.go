@@ -16,17 +16,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tionis/forge/internal/forgeconfig"
 	"github.com/zeebo/blake3"
 	"golang.org/x/crypto/chacha20poly1305"
 	_ "modernc.org/sqlite"
 )
 
 const (
-	blobDBEnv           = "FORGE_BLOB_DB"
-	blobCacheEnv        = "FORGE_BLOB_CACHE"
-	blobDBDefaultFile   = "blob.db"
-	blobCacheDefaultDir = "blobs"
-
 	blobEncAlgorithm = "xchacha20poly1305"
 	blobEncVersion   = 1
 
@@ -1204,48 +1200,15 @@ func renderBlobGCOutput(mode string, output blobGCOutput) error {
 }
 
 func defaultBlobDBPath() string {
-	if custom := strings.TrimSpace(os.Getenv(blobDBEnv)); custom != "" {
-		return custom
-	}
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if strings.TrimSpace(dataHome) == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return blobDBDefaultFile
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dataHome, snapshotDBDirName, blobDBDefaultFile)
+	return forgeconfig.BlobDBPath()
 }
 
 func defaultBlobCacheDir() string {
-	if custom := strings.TrimSpace(os.Getenv(blobCacheEnv)); custom != "" {
-		return custom
-	}
-	cacheHome := os.Getenv("XDG_CACHE_HOME")
-	if strings.TrimSpace(cacheHome) == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(snapshotDBDirName, blobCacheDefaultDir)
-		}
-		cacheHome = filepath.Join(home, ".cache")
-	}
-	return filepath.Join(cacheHome, snapshotDBDirName, blobCacheDefaultDir)
+	return forgeconfig.BlobCacheDir()
 }
 
 func defaultVectorQueueDBPathForGC() string {
-	if custom := strings.TrimSpace(os.Getenv("FORGE_VECTOR_QUEUE_DB")); custom != "" {
-		return custom
-	}
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if strings.TrimSpace(dataHome) == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return filepath.Join(snapshotDBDirName, "vector", "queue.db")
-		}
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	return filepath.Join(dataHome, snapshotDBDirName, "vector", "queue.db")
+	return forgeconfig.VectorQueueDBPath()
 }
 
 func openBlobDB(path string) (*sql.DB, error) {
