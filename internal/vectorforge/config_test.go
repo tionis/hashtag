@@ -17,15 +17,15 @@ func resetConfigParseEnv(t *testing.T) {
 		forgeconfig.EnvVectorEmbedDBPath,
 		forgeconfig.EnvVectorQueueDBPath,
 		forgeconfig.EnvVectorTempDir,
-		"FORGE_VECTOR_REPLICA_RESTORE_ON_START",
-		"WORKER_URL",
-		"IMAGE_WORKER_URL",
-		"TEXT_WORKER_URL",
-		"WORKER_CONCURRENCY",
-		"LOOKUP_CHUNK_SIZE",
-		"QUEUE_ACK_TIMEOUT_MS",
-		"MAX_PENDING_JOBS",
-		"MAX_JOB_ATTEMPTS",
+		envVectorReplicaRestoreOnStart,
+		envVectorWorkerURL,
+		envVectorImageWorkerURL,
+		envVectorTextWorkerURL,
+		envVectorWorkerConcurrency,
+		envVectorLookupChunkSize,
+		envVectorQueueAckTimeoutMS,
+		envVectorMaxPendingJobs,
+		envVectorMaxJobAttempts,
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")
@@ -46,7 +46,7 @@ func TestLoadConfig_DefaultMaxJobAttempts(t *testing.T) {
 
 func TestLoadConfig_MaxJobAttemptsFromEnv(t *testing.T) {
 	resetConfigParseEnv(t)
-	t.Setenv("MAX_JOB_ATTEMPTS", "7")
+	t.Setenv(envVectorMaxJobAttempts, "7")
 
 	cfg, err := LoadConfig()
 	if err != nil {
@@ -59,13 +59,13 @@ func TestLoadConfig_MaxJobAttemptsFromEnv(t *testing.T) {
 
 func TestLoadConfig_RejectsNonPositiveMaxJobAttempts(t *testing.T) {
 	resetConfigParseEnv(t)
-	t.Setenv("MAX_JOB_ATTEMPTS", "0")
+	t.Setenv(envVectorMaxJobAttempts, "0")
 
 	_, err := LoadConfig()
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
-	if !strings.Contains(err.Error(), "MAX_JOB_ATTEMPTS must be > 0") {
+	if !strings.Contains(err.Error(), envVectorMaxJobAttempts+" must be > 0") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

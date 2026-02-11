@@ -10,6 +10,19 @@ import (
 	"github.com/tionis/forge/internal/forgeconfig"
 )
 
+const (
+	envVectorListenAddr            = "FORGE_VECTOR_LISTEN_ADDR"
+	envVectorWorkerURL             = "FORGE_VECTOR_WORKER_URL"
+	envVectorImageWorkerURL        = "FORGE_VECTOR_IMAGE_WORKER_URL"
+	envVectorTextWorkerURL         = "FORGE_VECTOR_TEXT_WORKER_URL"
+	envVectorWorkerConcurrency     = "FORGE_VECTOR_WORKER_CONCURRENCY"
+	envVectorLookupChunkSize       = "FORGE_VECTOR_LOOKUP_CHUNK_SIZE"
+	envVectorQueueAckTimeoutMS     = "FORGE_VECTOR_QUEUE_ACK_TIMEOUT_MS"
+	envVectorMaxPendingJobs        = "FORGE_VECTOR_MAX_PENDING_JOBS"
+	envVectorMaxJobAttempts        = "FORGE_VECTOR_MAX_JOB_ATTEMPTS"
+	envVectorReplicaRestoreOnStart = "FORGE_VECTOR_REPLICA_RESTORE_ON_START"
+)
+
 // Config carries runtime settings for the VectorForge service.
 type Config struct {
 	ListenAddr         string
@@ -39,12 +52,12 @@ type Config struct {
 
 // LoadConfig reads environment variables and applies defaults.
 func LoadConfig() (Config, error) {
-	defaultWorkerURL := strings.TrimRight(getEnv("WORKER_URL", "http://localhost:3003"), "/")
-	imageWorkerURL := strings.TrimRight(getEnv("IMAGE_WORKER_URL", defaultWorkerURL), "/")
-	textWorkerURL := strings.TrimRight(getEnv("TEXT_WORKER_URL", imageWorkerURL), "/")
+	defaultWorkerURL := strings.TrimRight(getEnv(envVectorWorkerURL, "http://localhost:3003"), "/")
+	imageWorkerURL := strings.TrimRight(getEnv(envVectorImageWorkerURL, defaultWorkerURL), "/")
+	textWorkerURL := strings.TrimRight(getEnv(envVectorTextWorkerURL, imageWorkerURL), "/")
 
 	cfg := Config{
-		ListenAddr:            getEnv("LISTEN_ADDR", ":8080"),
+		ListenAddr:            getEnv(envVectorListenAddr, ":8080"),
 		ImageWorkerURL:        imageWorkerURL,
 		TextWorkerURL:         textWorkerURL,
 		WorkerConcurrency:     20,
@@ -68,47 +81,47 @@ func LoadConfig() (Config, error) {
 	}
 
 	var err error
-	if cfg.WorkerConcurrency, err = intFromEnv("WORKER_CONCURRENCY", cfg.WorkerConcurrency); err != nil {
+	if cfg.WorkerConcurrency, err = intFromEnv(envVectorWorkerConcurrency, cfg.WorkerConcurrency); err != nil {
 		return Config{}, err
 	}
-	if cfg.LookupChunkSize, err = intFromEnv("LOOKUP_CHUNK_SIZE", cfg.LookupChunkSize); err != nil {
+	if cfg.LookupChunkSize, err = intFromEnv(envVectorLookupChunkSize, cfg.LookupChunkSize); err != nil {
 		return Config{}, err
 	}
-	ackTimeoutMS, err := intFromEnv("QUEUE_ACK_TIMEOUT_MS", int(cfg.QueueAckTimeout/time.Millisecond))
+	ackTimeoutMS, err := intFromEnv(envVectorQueueAckTimeoutMS, int(cfg.QueueAckTimeout/time.Millisecond))
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.QueueAckTimeout = time.Duration(ackTimeoutMS) * time.Millisecond
-	if cfg.MaxPendingJobs, err = intFromEnv("MAX_PENDING_JOBS", cfg.MaxPendingJobs); err != nil {
+	if cfg.MaxPendingJobs, err = intFromEnv(envVectorMaxPendingJobs, cfg.MaxPendingJobs); err != nil {
 		return Config{}, err
 	}
-	if cfg.MaxJobAttempts, err = intFromEnv("MAX_JOB_ATTEMPTS", cfg.MaxJobAttempts); err != nil {
+	if cfg.MaxJobAttempts, err = intFromEnv(envVectorMaxJobAttempts, cfg.MaxJobAttempts); err != nil {
 		return Config{}, err
 	}
-	if cfg.ReplicaRestoreOnStart, err = boolFromEnv("FORGE_VECTOR_REPLICA_RESTORE_ON_START", cfg.ReplicaRestoreOnStart); err != nil {
+	if cfg.ReplicaRestoreOnStart, err = boolFromEnv(envVectorReplicaRestoreOnStart, cfg.ReplicaRestoreOnStart); err != nil {
 		return Config{}, err
 	}
 
 	if cfg.WorkerConcurrency <= 0 {
-		return Config{}, fmt.Errorf("WORKER_CONCURRENCY must be > 0")
+		return Config{}, fmt.Errorf("%s must be > 0", envVectorWorkerConcurrency)
 	}
 	if cfg.ImageWorkerURL == "" {
-		return Config{}, fmt.Errorf("IMAGE_WORKER_URL must not be empty")
+		return Config{}, fmt.Errorf("%s must not be empty", envVectorImageWorkerURL)
 	}
 	if cfg.TextWorkerURL == "" {
-		return Config{}, fmt.Errorf("TEXT_WORKER_URL must not be empty")
+		return Config{}, fmt.Errorf("%s must not be empty", envVectorTextWorkerURL)
 	}
 	if cfg.LookupChunkSize <= 0 {
-		return Config{}, fmt.Errorf("LOOKUP_CHUNK_SIZE must be > 0")
+		return Config{}, fmt.Errorf("%s must be > 0", envVectorLookupChunkSize)
 	}
 	if cfg.QueueAckTimeout <= 0 {
-		return Config{}, fmt.Errorf("QUEUE_ACK_TIMEOUT_MS must be > 0")
+		return Config{}, fmt.Errorf("%s must be > 0", envVectorQueueAckTimeoutMS)
 	}
 	if cfg.MaxPendingJobs <= 0 {
-		return Config{}, fmt.Errorf("MAX_PENDING_JOBS must be > 0")
+		return Config{}, fmt.Errorf("%s must be > 0", envVectorMaxPendingJobs)
 	}
 	if cfg.MaxJobAttempts <= 0 {
-		return Config{}, fmt.Errorf("MAX_JOB_ATTEMPTS must be > 0")
+		return Config{}, fmt.Errorf("%s must be > 0", envVectorMaxJobAttempts)
 	}
 
 	return cfg, nil
