@@ -18,6 +18,10 @@ import (
 	"github.com/tionis/forge/internal/vectorforge"
 )
 
+var configureVectorReplicationFromRemoteConfigFunc = configureVectorReplicationFromRemoteConfig
+var acquireVectorWriterLeaseFunc = acquireVectorWriterLease
+var runVectorforgeFunc = vectorforge.Run
+
 func runVectorServeCommand(args []string) error {
 	fs := flag.NewFlagSet("vector serve", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
@@ -56,11 +60,11 @@ func runVectorServeCommand(args []string) error {
 	runCtx := ctx
 	cancelRun := func() {}
 
-	setup, err := configureVectorReplicationFromRemoteConfig(ctx, &cfg)
+	setup, err := configureVectorReplicationFromRemoteConfigFunc(ctx, &cfg)
 	if err != nil {
 		return err
 	}
-	lease, err = acquireVectorWriterLease(ctx, logger, setup.Bootstrap, setup.Config)
+	lease, err = acquireVectorWriterLeaseFunc(ctx, logger, setup.Bootstrap, setup.Config)
 	if err != nil {
 		return err
 	}
@@ -85,7 +89,7 @@ func runVectorServeCommand(args []string) error {
 	}
 	defer cancelRun()
 
-	runErr := vectorforge.Run(runCtx, cfg, logger)
+	runErr := runVectorforgeFunc(runCtx, cfg, logger)
 	if lease != nil {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		closeErr := lease.Close(closeCtx)

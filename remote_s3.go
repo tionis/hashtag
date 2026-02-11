@@ -23,6 +23,7 @@ type blobRemoteStore interface {
 	BucketName() string
 	PutBlob(ctx context.Context, oid string, encoded []byte) (string, error)
 	GetBlob(ctx context.Context, oid string) ([]byte, string, bool, error)
+	HasBlob(ctx context.Context, oid string) (bool, string, int64, error)
 	DeleteBlob(ctx context.Context, oid string) (bool, error)
 }
 
@@ -244,6 +245,25 @@ func (s *s3BlobRemoteStore) DeleteBlob(ctx context.Context, oid string) (bool, e
 		return false, fmt.Errorf("delete blob %q from s3://%s/%s: %w", oid, s.bootstrap.Bucket, objectKey, err)
 	}
 	return true, nil
+}
+
+func (s *s3BlobRemoteStore) HasBlob(ctx context.Context, oid string) (bool, string, int64, error) {
+	objectKey, err := s.objectKeyForOID(oid)
+	if err != nil {
+		return false, "", 0, err
+	}
+	resp, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bootstrap.Bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return false, "", 0, nil
+		}
+		return false, "", 0, fmt.Errorf("head blob %q at s3://%s/%s: %w", oid, s.bootstrap.Bucket, objectKey, err)
+	}
+	etag := strings.Trim(strings.TrimSpace(aws.ToString(resp.ETag)), "\"")
+	return true, etag, aws.ToInt64(resp.ContentLength), nil
 }
 
 func remoteBlobObjectKey(cfg remoteGlobalConfig, oid string) (string, error) {

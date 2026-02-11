@@ -83,6 +83,9 @@ Recommended `gc_info` fields:
 
 - Unsigned refs DBs are intentional in this model:
   - a principal able to tamper refs and trigger GC damage typically also has direct blob delete capability on S3.
+- Out-of-band remote delete guardrails are implemented in `blob put`:
+  - verification fallback (default): verify cached remote existence and upload when stale.
+  - strict mode: fail on stale/unverifiable cache hits.
 - Lease/fencing and replication encryption are separate concerns:
   - leases protect correctness for single-writer services
   - age/Litestream protects confidentiality of replicated DB content

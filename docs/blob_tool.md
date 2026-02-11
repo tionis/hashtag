@@ -26,6 +26,9 @@
 - local refs are tracked in `${FORGE_PATH_REFS_DB}` and streamed by `forge replicate daemon` for global GC workers.
 - remote inventory base cache is stored in `${FORGE_PATH_S3_BLOBS_DB}` and refreshed from `gc_info` generation changes.
 - local overlay cache is stored in `${FORGE_PATH_S3_BLOBS_OVERLAY_DB}` for discoveries/uploads between GC generations.
+- `blob put` has out-of-band delete guardrails:
+  - verification fallback (`-verify-remote-cache`, default true)
+  - strict mode (`-strict-remote-cache`) to fail on stale/unverifiable cache hits.
 
 ## Metadata Tables
 
@@ -62,6 +65,12 @@
 - writes an immutable SQLite inventory snapshot
 - uploads snapshot to `<object_prefix>/gc/inventory/<generation>/inventory.db`
 - updates `<object_prefix>/gc/gc_info.json` pointer
+
+## Hardening Notes
+
+- weak-backend dedupe (`If-None-Match` unavailable) uses local inventory cache as a hint, then verifies with remote HEAD.
+- stale cache hits trigger fallback upload by default.
+- strict mode allows fail-fast behavior for workflows that prefer explicit error over automatic recovery.
 
 By default `blob gc` is dry-run and only reports a delete plan. Use `-apply` to delete local rows/files.
 

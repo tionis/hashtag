@@ -17,6 +17,7 @@ This folder contains architecture notes and tool contracts for Forge.
 - `remote_tool.md`: `forge remote` global S3 backend configuration.
 - `blob_tool.md`: `forge blob` deterministic encrypted blob commands and backend behavior.
 - `vector_tool.md`: `forge vector` embedding coordinator and ingestion workflows.
+- `operations.md`: service lifecycle and key rotation/rekeying runbooks.
 - `file_hashing_via_xattrs.md`: hash cache metadata spec used by `forge hash`.
 
 ## Design Goals

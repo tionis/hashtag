@@ -549,6 +549,7 @@ func hydrateRemoteInventoryCacheIfNeeded(ctx context.Context, store *s3BlobRemot
 		gcInfo.InventoryDBFormat = remoteInventoryDBFormatVersion
 	}
 
+	var payload []byte
 	localGeneration, localExists, err := loadLocalInventoryGeneration(basePath)
 	if err != nil {
 		return err
@@ -561,26 +562,43 @@ func hydrateRemoteInventoryCacheIfNeeded(ctx context.Context, store *s3BlobRemot
 		if err != nil {
 			return fmt.Errorf("download inventory snapshot s3://%s/%s: %w", store.bootstrap.Bucket, gcInfo.InventoryDBKey, err)
 		}
-		payload, readErr := io.ReadAll(resp.Body)
+		payloadBytes, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
 			return fmt.Errorf("read inventory snapshot payload: %w", readErr)
 		}
+		payload = payloadBytes
 		expectedHash := normalizeDigestHex(strings.TrimSpace(gcInfo.InventoryDBHash))
 		if expectedHash != "" {
-			got := blake3Hex(payload)
+			got := blake3Hex(payloadBytes)
 			if got != expectedHash {
 				return fmt.Errorf("inventory snapshot hash mismatch: expected %s got %s", expectedHash, got)
 			}
 		}
-		if err := replaceLocalInventoryBaseDB(basePath, payload, gcInfo, now); err != nil {
+	}
+
+	return applyRemoteGCInfoToLocalInventory(basePath, overlayPath, gcInfo, payload, now)
+}
+
+func applyRemoteGCInfoToLocalInventory(basePath string, overlayPath string, gcInfo remoteGCInfoDocument, inventoryPayload []byte, now time.Time) error {
+	if gcInfo.InventoryDBFormat <= 0 {
+		gcInfo.InventoryDBFormat = remoteInventoryDBFormatVersion
+	}
+	localGeneration, localExists, err := loadLocalInventoryGeneration(basePath)
+	if err != nil {
+		return err
+	}
+	if !localExists || localGeneration != gcInfo.Generation {
+		if len(inventoryPayload) == 0 {
+			return fmt.Errorf("inventory payload is required for generation transition %q -> %q", localGeneration, gcInfo.Generation)
+		}
+		if err := replaceLocalInventoryBaseDB(basePath, inventoryPayload, gcInfo, now); err != nil {
 			return err
 		}
 		if err := clearOverlayStateForGeneration(overlayPath, gcInfo.Generation, now); err != nil {
 			return err
 		}
 	}
-
 	return markRemoteGCInfoCheck(overlayPath, now, gcInfo.Generation)
 }
 

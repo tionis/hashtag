@@ -187,6 +187,9 @@ Safety assumption:
 
 - this optimization assumes remote blob deletions happen only via GC worker.
 - if out-of-band deletes are possible, clients must degrade to stricter verification paths.
+  - current implementation exposes `blob put` guardrails:
+    - verification fallback (default)
+    - strict fail-fast mode for stale/unverifiable cache hits.
 
 ### Option B: Master-Key Worker
 

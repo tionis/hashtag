@@ -45,6 +45,14 @@ func (s *fakeBlobRemoteStore) GetBlob(_ context.Context, oid string) ([]byte, st
 	return append([]byte(nil), payload...), blake3Hex(payload), true, nil
 }
 
+func (s *fakeBlobRemoteStore) HasBlob(_ context.Context, oid string) (bool, string, int64, error) {
+	payload, ok := s.objects[oid]
+	if !ok {
+		return false, "", 0, nil
+	}
+	return true, blake3Hex(payload), int64(len(payload)), nil
+}
+
 func (s *fakeBlobRemoteStore) DeleteBlob(_ context.Context, oid string) (bool, error) {
 	_, ok := s.objects[oid]
 	if ok {
@@ -763,5 +771,107 @@ INSERT INTO jobs(file_path, status) VALUES (?, 'pending');
 	}
 	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, dropCID); got != 0 {
 		t.Fatalf("expected stale local keep ref for dropped cid to be removed, got %d", got)
+	}
+}
+
+func TestBlobPutRemoteVerificationFallbackRepairsStaleRemoteInventory(t *testing.T) {
+	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
+	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
+	withFakeBlobRemoteStore(t, remoteStore)
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	inputPath := filepath.Join(temp, "input.bin")
+	inputData := []byte("remote-verification-fallback")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	if err := runBlobPutCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-remote",
+		"-output", "kv",
+		inputPath,
+	}); err != nil {
+		t.Fatalf("seed remote blob put: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+
+	var oid string
+	if err := db.QueryRow(`SELECT oid FROM blob_map LIMIT 1`).Scan(&oid); err != nil {
+		t.Fatalf("query oid: %v", err)
+	}
+	delete(remoteStore.objects, oid) // simulate out-of-band delete
+
+	if err := runBlobPutCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-remote",
+		"-output", "kv",
+		inputPath,
+	}); err != nil {
+		t.Fatalf("blob put with verification fallback should recover stale inventory: %v", err)
+	}
+	if _, exists := remoteStore.objects[oid]; !exists {
+		t.Fatal("expected verification fallback upload to restore missing remote object")
+	}
+}
+
+func TestBlobPutRemoteStrictCacheFailsOnStaleRemoteInventory(t *testing.T) {
+	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
+	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
+	withFakeBlobRemoteStore(t, remoteStore)
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	inputPath := filepath.Join(temp, "input.bin")
+	inputData := []byte("remote-strict-cache")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	if err := runBlobPutCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-remote",
+		"-output", "kv",
+		inputPath,
+	}); err != nil {
+		t.Fatalf("seed remote blob put: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+
+	var oid string
+	if err := db.QueryRow(`SELECT oid FROM blob_map LIMIT 1`).Scan(&oid); err != nil {
+		t.Fatalf("query oid: %v", err)
+	}
+	delete(remoteStore.objects, oid) // simulate out-of-band delete
+
+	err = runBlobPutCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-remote",
+		"-strict-remote-cache",
+		"-output", "kv",
+		inputPath,
+	})
+	if err == nil {
+		t.Fatal("expected strict remote cache mode to fail on stale remote inventory")
+	}
+	if _, exists := remoteStore.objects[oid]; exists {
+		t.Fatal("expected strict mode failure to avoid fallback upload")
 	}
 }

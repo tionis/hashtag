@@ -348,6 +348,8 @@ Blob flags:
 - `-cache`: local plaintext blob cache dir (default from `${FORGE_PATH_BLOB_CACHE}` or `${FORGE_CACHE_DIR}/blobs`)
 - `-refs-db`: refs DB path for keep-set tracking (default from `${FORGE_PATH_REFS_DB}` or `${FORGE_DATA_DIR}/refs.db`)
 - `-remote`: upload/fetch/delete encrypted blob objects using configured S3 remote (`put/get/rm`)
+- `-verify-remote-cache`: verify cached remote-existence hits before skipping `blob put` upload (default `true`)
+- `-strict-remote-cache`: fail `blob put` if cached remote-existence cannot be verified (implies verification; no upload fallback)
 - `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
 - `-oid`: encrypted object ID selector for `blob get`/`blob rm`
 - `-out`: output plaintext path for `blob get` (required)
@@ -386,6 +388,9 @@ Blob notes:
 - `blob put` and `blob get` upsert local keep refs (`blob.local.keep`) in `refs.db`; local `blob rm` removes them.
 - `blob gc` refreshes derived refs (`snapshot.tree_entries`, `vector.queue`) in `refs.db` and prunes stale local keep refs for deleted CIDs.
 - remote inventory cache flow uses GC generations: workers publish immutable `inventory.db` snapshots and a `gc_info` pointer; clients hydrate `${FORGE_PATH_S3_BLOBS_DB}` per generation and keep local discoveries/uploads in `${FORGE_PATH_S3_BLOBS_OVERLAY_DB}`.
+- out-of-band remote delete guardrails:
+  - default verification fallback (`-verify-remote-cache=true`) verifies cached existence and uploads if stale.
+  - strict mode (`-strict-remote-cache`) fails instead of fallback upload when cache is stale/unverifiable.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).

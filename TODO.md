@@ -50,7 +50,7 @@
 
 ### Phase 6: Hardening
 
-- [ ] Add integration tests for lease loss and restart recovery with dual DB restore.
-- [ ] Add integration tests for generation bumps and overlay reset behavior.
-- [ ] Add guardrails for out-of-band remote deletes (strict mode / verification fallback).
-- [ ] Add operational docs for daemon lifecycle and key rotation/rekeying.
+- [x] Add integration tests for lease loss and restart recovery with dual DB restore.
+- [x] Add integration tests for generation bumps and overlay reset behavior.
+- [x] Add guardrails for out-of-band remote deletes (strict mode / verification fallback).
+- [x] Add operational docs for daemon lifecycle and key rotation/rekeying.

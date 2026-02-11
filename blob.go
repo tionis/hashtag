@@ -163,6 +163,8 @@ func runBlobPutCommand(args []string) error {
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
 	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	remoteUpload := fs.Bool("remote", false, "Upload encrypted blob payload to configured remote S3")
+	verifyRemoteCache := fs.Bool("verify-remote-cache", true, "Verify cached remote-existence hits before skipping upload")
+	strictRemoteCache := fs.Bool("strict-remote-cache", false, "Fail when cached remote-existence hits cannot be verified (no fallback upload)")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	verbose := fs.Bool("v", false, "Verbose output")
 	if err := fs.Parse(args); err != nil {
@@ -276,6 +278,7 @@ func runBlobPutCommand(args []string) error {
 		}
 
 		knownRemoteExists := false
+		cacheEvidence := ""
 		if isS3Store && !s3Store.cfg.S3.Capabilities.ConditionalIfNoneMatch {
 			if cacheErr := hydrateRemoteInventoryCacheIfNeeded(ctx, s3Store); cacheErr != nil {
 				log.Printf("[blob] warning: refresh remote inventory cache: %v", cacheErr)
@@ -291,13 +294,47 @@ func runBlobPutCommand(args []string) error {
 					log.Printf("[blob] warning: check remote inventory cache for %s: %v", oid, existsErr)
 				} else {
 					knownRemoteExists = exists
+					cacheEvidence = "union-inventory-cache"
+				}
+			}
+		}
+		if !knownRemoteExists {
+			exists, existsErr := remoteBlobInventoryHasOID(tx, remoteBackend, remoteBucket, oid)
+			if existsErr != nil {
+				return existsErr
+			}
+			if exists {
+				knownRemoteExists = true
+				cacheEvidence = "local-remote-blob-inventory"
+			}
+		}
+
+		if knownRemoteExists {
+			mustVerify := *verifyRemoteCache || *strictRemoteCache
+			if mustVerify {
+				exists, verifiedETag, _, verifyErr := remoteStore.HasBlob(ctx, oid)
+				if verifyErr != nil {
+					if *strictRemoteCache {
+						return fmt.Errorf("verify cached remote existence for %s: %w", oid, verifyErr)
+					}
+					log.Printf("[blob] warning: verify cached remote existence for %s failed (%v); falling back to upload", oid, verifyErr)
+					knownRemoteExists = false
+				} else if !exists {
+					staleErr := fmt.Errorf("cached remote existence for %s is stale (%s): object not found on backend", oid, cacheEvidence)
+					if *strictRemoteCache {
+						return staleErr
+					}
+					log.Printf("[blob] warning: %v; falling back to upload", staleErr)
+					knownRemoteExists = false
+				} else if strings.TrimSpace(verifiedETag) != "" {
+					etag = strings.TrimSpace(verifiedETag)
 				}
 			}
 		}
 
 		if knownRemoteExists {
 			if *verbose {
-				log.Printf("[blob] skipping upload for %s; remote inventory cache reports object already present", oid)
+				log.Printf("[blob] skipping upload for %s; cached remote existence verified (%s)", oid, cacheEvidence)
 			}
 		} else {
 			if *verbose {
@@ -1712,6 +1749,33 @@ func lookupBlobMapByOID(db *sql.DB, oid string) (blobMapRow, bool, error) {
 		return blobMapRow{}, false, fmt.Errorf("lookup blob map by oid %q: %w", oid, err)
 	}
 	return row, true, nil
+}
+
+func remoteBlobInventoryHasOID(tx *sql.Tx, backend string, bucket string, oid string) (bool, error) {
+	if tx == nil {
+		return false, fmt.Errorf("inventory existence lookup requires transaction")
+	}
+	backend = strings.TrimSpace(backend)
+	bucket = strings.TrimSpace(bucket)
+	oid = normalizeDigestHex(oid)
+	if backend == "" || bucket == "" || oid == "" {
+		return false, fmt.Errorf("inventory existence lookup requires backend, bucket, and oid")
+	}
+
+	var marker int
+	err := tx.QueryRow(
+		`SELECT 1 FROM remote_blob_inventory WHERE backend = ? AND bucket = ? AND oid = ? LIMIT 1`,
+		backend,
+		bucket,
+		oid,
+	).Scan(&marker)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("lookup remote inventory oid=%q backend=%q bucket=%q: %w", oid, backend, bucket, err)
+	}
+	return true, nil
 }
 
 func deleteBlobMapRows(tx *sql.Tx, cid string, oid string) (int64, error) {

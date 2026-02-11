@@ -14,6 +14,9 @@ import (
 	_ "github.com/benbjohnson/litestream/s3"
 )
 
+var newReplicaClientFromURLFunc = litestream.NewReplicaClientFromURL
+var restoreDBIfMissingFunc = restoreDBIfMissing
+
 type replicaTarget struct {
 	name       string
 	dbPath     string
@@ -59,13 +62,13 @@ func setupReplication(ctx context.Context, cfg Config, logger *log.Logger) (*Rep
 			cleanup()
 			return nil, err
 		}
-		client, err := litestream.NewReplicaClientFromURL(target.replicaURL)
+		client, err := newReplicaClientFromURLFunc(target.replicaURL)
 		if err != nil {
 			cleanup()
 			return nil, fmt.Errorf("create litestream replica client for %s: %w", target.name, err)
 		}
 		if cfg.ReplicaRestoreOnStart {
-			if err := restoreDBIfMissing(ctx, target.name, target.dbPath, client, logger); err != nil {
+			if err := restoreDBIfMissingFunc(ctx, target.name, target.dbPath, client, logger); err != nil {
 				cleanup()
 				return nil, err
 			}

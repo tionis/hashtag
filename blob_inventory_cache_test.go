@@ -212,3 +212,141 @@ func TestReplaceLocalInventoryBaseDBSetsGenerationMeta(t *testing.T) {
 		t.Fatalf("expected copied remote_blobs row count=1, got %d", rowCount)
 	}
 }
+
+func TestApplyRemoteGCInfoToLocalInventoryGenerationBumpResetsOverlay(t *testing.T) {
+	temp := t.TempDir()
+	basePath := filepath.Join(temp, "s3-blobs.db")
+	overlayPath := filepath.Join(temp, "s3-blobs-overlay.db")
+
+	seedBasePath := filepath.Join(temp, "seed-base.db")
+	seedBaseDB, err := openRemoteInventoryBaseDB(seedBasePath)
+	if err != nil {
+		t.Fatalf("openRemoteInventoryBaseDB(seed): %v", err)
+	}
+	if _, err := seedBaseDB.Exec(
+		`INSERT INTO remote_blobs(backend, bucket, object_key, oid, size, etag, cipher_hash, last_seen_ns, scan_id)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"s3",
+		"bucket-a",
+		"forge/blobs/11/22/1111111111111111111111111111111111111111111111111111111111111111.fblob",
+		"1111111111111111111111111111111111111111111111111111111111111111",
+		11,
+		"etag-1",
+		"etag-1",
+		time.Now().UTC().UnixNano(),
+		"scan-1",
+	); err != nil {
+		_ = seedBaseDB.Close()
+		t.Fatalf("seed generation-1 inventory db: %v", err)
+	}
+	if _, err := seedBaseDB.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		_ = seedBaseDB.Close()
+		t.Fatalf("checkpoint generation-1 db: %v", err)
+	}
+	if _, err := seedBaseDB.Exec(`PRAGMA journal_mode=DELETE`); err != nil {
+		_ = seedBaseDB.Close()
+		t.Fatalf("set generation-1 db journal mode: %v", err)
+	}
+	_ = seedBaseDB.Close()
+
+	generation1Payload, err := os.ReadFile(seedBasePath)
+	if err != nil {
+		t.Fatalf("read generation-1 payload: %v", err)
+	}
+	gcInfo1 := remoteGCInfoDocument{
+		Generation:        "gen-1",
+		InventoryDBKey:    "forge/gc/inventory/gen-1/inventory.db",
+		InventoryDBHash:   blake3Hex(generation1Payload),
+		InventoryDBFormat: remoteInventoryDBFormatVersion,
+	}
+	if err := applyRemoteGCInfoToLocalInventory(basePath, overlayPath, gcInfo1, generation1Payload, time.Now().UTC()); err != nil {
+		t.Fatalf("apply generation-1 gc info: %v", err)
+	}
+
+	if err := upsertOverlayBlobDiscovery(overlayPath, overlayBlobRow{
+		Backend:    "s3",
+		Bucket:     "bucket-a",
+		ObjectKey:  "forge/blobs/33/44/3333333333333333333333333333333333333333333333333333333333333333.fblob",
+		OID:        "3333333333333333333333333333333333333333333333333333333333333333",
+		Size:       33,
+		ETag:       "etag-3",
+		CipherHash: "etag-3",
+		LastSeenNS: time.Now().UTC().UnixNano(),
+		Source:     "test-overlay",
+	}); err != nil {
+		t.Fatalf("seed overlay discovery before generation bump: %v", err)
+	}
+
+	overlayDB, err := openRemoteInventoryOverlayDB(overlayPath)
+	if err != nil {
+		t.Fatalf("openRemoteInventoryOverlayDB(before bump): %v", err)
+	}
+	if got := mustCount(t, overlayDB, "SELECT COUNT(*) FROM overlay_blobs"); got != 1 {
+		_ = overlayDB.Close()
+		t.Fatalf("expected 1 overlay blob before generation bump, got %d", got)
+	}
+	_ = overlayDB.Close()
+
+	seedBasePath2 := filepath.Join(temp, "seed-base-2.db")
+	seedBaseDB2, err := openRemoteInventoryBaseDB(seedBasePath2)
+	if err != nil {
+		t.Fatalf("openRemoteInventoryBaseDB(seed2): %v", err)
+	}
+	if _, err := seedBaseDB2.Exec(
+		`INSERT INTO remote_blobs(backend, bucket, object_key, oid, size, etag, cipher_hash, last_seen_ns, scan_id)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"s3",
+		"bucket-a",
+		"forge/blobs/55/66/5555555555555555555555555555555555555555555555555555555555555555.fblob",
+		"5555555555555555555555555555555555555555555555555555555555555555",
+		55,
+		"etag-5",
+		"etag-5",
+		time.Now().UTC().UnixNano(),
+		"scan-5",
+	); err != nil {
+		_ = seedBaseDB2.Close()
+		t.Fatalf("seed generation-2 inventory db: %v", err)
+	}
+	if _, err := seedBaseDB2.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		_ = seedBaseDB2.Close()
+		t.Fatalf("checkpoint generation-2 db: %v", err)
+	}
+	if _, err := seedBaseDB2.Exec(`PRAGMA journal_mode=DELETE`); err != nil {
+		_ = seedBaseDB2.Close()
+		t.Fatalf("set generation-2 db journal mode: %v", err)
+	}
+	_ = seedBaseDB2.Close()
+	generation2Payload, err := os.ReadFile(seedBasePath2)
+	if err != nil {
+		t.Fatalf("read generation-2 payload: %v", err)
+	}
+	gcInfo2 := remoteGCInfoDocument{
+		Generation:        "gen-2",
+		InventoryDBKey:    "forge/gc/inventory/gen-2/inventory.db",
+		InventoryDBHash:   blake3Hex(generation2Payload),
+		InventoryDBFormat: remoteInventoryDBFormatVersion,
+	}
+	if err := applyRemoteGCInfoToLocalInventory(basePath, overlayPath, gcInfo2, generation2Payload, time.Now().UTC()); err != nil {
+		t.Fatalf("apply generation-2 gc info: %v", err)
+	}
+
+	overlayDB, err = openRemoteInventoryOverlayDB(overlayPath)
+	if err != nil {
+		t.Fatalf("openRemoteInventoryOverlayDB(after bump): %v", err)
+	}
+	defer overlayDB.Close()
+	if got := mustCount(t, overlayDB, "SELECT COUNT(*) FROM overlay_blobs"); got != 0 {
+		t.Fatalf("expected overlay_blobs to be cleared on generation bump, got %d", got)
+	}
+	if got := mustCount(t, overlayDB, "SELECT COUNT(*) FROM overlay_tombstones"); got != 0 {
+		t.Fatalf("expected overlay_tombstones to be cleared on generation bump, got %d", got)
+	}
+	var overlayGeneration string
+	if err := overlayDB.QueryRow(`SELECT meta_value FROM overlay_meta WHERE meta_key = ?`, overlayMetaLastGenerationKey).Scan(&overlayGeneration); err != nil {
+		t.Fatalf("query overlay generation meta after bump: %v", err)
+	}
+	if overlayGeneration != "gen-2" {
+		t.Fatalf("expected overlay generation meta gen-2 after bump, got %q", overlayGeneration)
+	}
+}
