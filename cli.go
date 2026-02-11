@@ -349,6 +349,59 @@ func newRemoteCommand() *cobra.Command {
 			return runRemoteConfigShowCommand(args)
 		},
 	})
+	configCmd.AddCommand(&cobra.Command{
+		Use:                "set [options]",
+		Short:              "Update mutable values in the global remote config object.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigSetCommand(args)
+		},
+	})
+
+	nodeCmd := &cobra.Command{
+		Use:                "node",
+		Aliases:            []string{"nodes"},
+		Short:              "Manage trust nodes in the global remote config object.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	nodeCmd.AddCommand(&cobra.Command{
+		Use:                "list [options]",
+		Aliases:            []string{"ls"},
+		Short:              "List trust nodes from global remote config.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigNodeListCommand(args)
+		},
+	})
+	nodeCmd.AddCommand(&cobra.Command{
+		Use:                "add [options]",
+		Short:              "Add a trust node to global remote config.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigNodeAddCommand(args)
+		},
+	})
+	nodeCmd.AddCommand(&cobra.Command{
+		Use:                "update [options]",
+		Short:              "Update a trust node in global remote config.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigNodeUpdateCommand(args)
+		},
+	})
+	nodeCmd.AddCommand(&cobra.Command{
+		Use:                "remove [options]",
+		Aliases:            []string{"rm", "delete", "del"},
+		Short:              "Remove a trust node from global remote config.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runRemoteConfigNodeRemoveCommand(args)
+		},
+	})
+	configCmd.AddCommand(nodeCmd)
 	remoteCmd.AddCommand(configCmd)
 
 	return remoteCmd

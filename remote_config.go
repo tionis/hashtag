@@ -134,6 +134,7 @@ func runRemoteConfigInitCommand(args []string) error {
 	vectorLeaseDuration := fs.Int("vector-lease-duration", defaultVectorLeaseDurationSeconds, "Vector writer lease duration in seconds")
 	vectorLeaseRenewInterval := fs.Int("vector-lease-renew-interval", defaultVectorLeaseRenewIntervalSeconds, "Vector writer lease renew interval in seconds")
 	signingKeyPath := fs.String("signing-key", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyEnv)), "Path to OpenSSH private key used to sign remote config document")
+	signingKeyPassphrase := fs.String("signing-key-passphrase", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyPassphraseEnv)), "Passphrase for encrypted OpenSSH private key used by -signing-key")
 	documentVersion := fs.Int64("doc-version", 0, "Signed document version (default: auto)")
 	documentExpiresSeconds := fs.Int("doc-expires-seconds", defaultRemoteDocExpiresSeconds, "Optional signed document expiry in seconds (0 means no expiry)")
 	trustNodesFile := fs.String("trust-nodes-file", "", "Optional path to trust nodes JSON file (array or object with \"nodes\")")
@@ -161,7 +162,7 @@ func runRemoteConfigInitCommand(args []string) error {
 		return err
 	}
 
-	signer, signerAuthorized, _, err := loadRemoteSigningKey(*signingKeyPath)
+	signer, signerAuthorized, _, err := loadRemoteSigningKey(*signingKeyPath, *signingKeyPassphrase)
 	if err != nil {
 		return err
 	}

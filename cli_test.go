@@ -85,6 +85,24 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"remote", "config", "show"}); err != nil {
 		t.Fatalf("expected remote config show command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"remote", "config", "set"}); err != nil {
+		t.Fatalf("expected remote config set command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"remote", "config", "node"}); err != nil {
+		t.Fatalf("expected remote config node command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"remote", "config", "node", "list"}); err != nil {
+		t.Fatalf("expected remote config node list command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"remote", "config", "node", "add"}); err != nil {
+		t.Fatalf("expected remote config node add command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"remote", "config", "node", "update"}); err != nil {
+		t.Fatalf("expected remote config node update command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"remote", "config", "node", "remove"}); err != nil {
+		t.Fatalf("expected remote config node remove command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"config", "show"}); err != nil {
 		t.Fatalf("expected config show command to be registered: %v", err)
 	}

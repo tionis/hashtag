@@ -7,28 +7,34 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/zeebo/blake3"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/terminal"
 )
 
 const (
-	forgeTrustSigningKeyEnv    = "FORGE_TRUST_SIGNING_KEY"
-	remoteSignedDocumentSchema = "forge.signed_document.v1"
-	remoteDocumentTypeConfig   = "remote_config"
-	remoteSignatureNamespace   = "forge-remote-config-v1"
-	defaultRemoteRootNodeName  = "root"
+	forgeTrustSigningKeyEnv           = "FORGE_TRUST_SIGNING_KEY"
+	forgeTrustSigningKeyPassphraseEnv = "FORGE_TRUST_SIGNING_KEY_PASSPHRASE"
+	remoteSignedDocumentSchema        = "forge.signed_document.v1"
+	remoteDocumentTypeConfig          = "remote_config"
+	remoteSignatureNamespace          = "forge-remote-config-v1"
+	defaultRemoteRootNodeName         = "root"
 )
 
 //go:embed forge.pub
 var compiledTrustRootKeysText string
 
 var trustedRootPublicKeysLoader = loadCompiledTrustedRootPublicKeys
+
+var errRemoteSigningKeyPassphraseRequired = stderrors.New("remote signing key passphrase required")
 
 type remoteTrustNode struct {
 	Name      string   `json:"name"`
@@ -68,7 +74,7 @@ type remoteTrustStateRow struct {
 	PayloadHash string
 }
 
-func loadRemoteSigningKey(path string) (ssh.Signer, string, string, error) {
+func loadRemoteSigningKey(path string, passphrase string) (ssh.Signer, string, string, error) {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
 		return nil, "", "", fmt.Errorf("remote config signing key is required (set -signing-key or %s)", forgeTrustSigningKeyEnv)
@@ -77,17 +83,65 @@ func loadRemoteSigningKey(path string) (ssh.Signer, string, string, error) {
 	if err != nil {
 		return nil, "", "", fmt.Errorf("read signing key %q: %w", trimmed, err)
 	}
-	parsed, err := ssh.ParseRawPrivateKey(raw)
+	signer, err := parseRemoteSigningKey(raw, strings.TrimSpace(passphrase))
+	if stderrors.Is(err, errRemoteSigningKeyPassphraseRequired) && strings.TrimSpace(passphrase) == "" && terminal.IsTerminal(int(os.Stdin.Fd())) {
+		promptedPassphrase, promptErr := promptRemoteSigningKeyPassphrase(trimmed)
+		if promptErr != nil {
+			return nil, "", "", promptErr
+		}
+		signer, err = parseRemoteSigningKey(raw, promptedPassphrase)
+	}
 	if err != nil {
 		return nil, "", "", fmt.Errorf("parse signing key %q: %w", trimmed, err)
-	}
-	signer, err := ssh.NewSignerFromKey(parsed)
-	if err != nil {
-		return nil, "", "", fmt.Errorf("create signer from %q: %w", trimmed, err)
 	}
 	authorized := normalizeAuthorizedKey(signer.PublicKey())
 	fingerprint := ssh.FingerprintSHA256(signer.PublicKey())
 	return signer, authorized, fingerprint, nil
+}
+
+func promptRemoteSigningKeyPassphrase(path string) (string, error) {
+	fmt.Fprintf(os.Stderr, "Enter passphrase for signing key %s: ", path)
+	passphraseBytes, err := terminal.ReadPassword(int(syscall.Stdin))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("read signing key passphrase: %w", err)
+	}
+	return strings.TrimSpace(string(passphraseBytes)), nil
+}
+
+func parseRemoteSigningKey(raw []byte, passphrase string) (ssh.Signer, error) {
+	if strings.TrimSpace(passphrase) != "" {
+		parsedEncrypted, encryptedErr := ssh.ParseRawPrivateKeyWithPassphrase(raw, []byte(passphrase))
+		if encryptedErr == nil {
+			signer, signerErr := ssh.NewSignerFromKey(parsedEncrypted)
+			if signerErr != nil {
+				return nil, fmt.Errorf("create signer from encrypted key: %w", signerErr)
+			}
+			return signer, nil
+		}
+		parsedPlain, plainErr := ssh.ParseRawPrivateKey(raw)
+		if plainErr == nil {
+			signer, signerErr := ssh.NewSignerFromKey(parsedPlain)
+			if signerErr != nil {
+				return nil, fmt.Errorf("create signer from key: %w", signerErr)
+			}
+			return signer, nil
+		}
+		return nil, encryptedErr
+	}
+
+	parsed, err := ssh.ParseRawPrivateKey(raw)
+	if err != nil {
+		if _, missing := err.(*ssh.PassphraseMissingError); missing {
+			return nil, fmt.Errorf("%w: signing key is encrypted; provide -signing-key-passphrase or %s", errRemoteSigningKeyPassphraseRequired, forgeTrustSigningKeyPassphraseEnv)
+		}
+		return nil, err
+	}
+	signer, err := ssh.NewSignerFromKey(parsed)
+	if err != nil {
+		return nil, fmt.Errorf("create signer from key: %w", err)
+	}
+	return signer, nil
 }
 
 func parseAuthorizedKeyString(raw string) (ssh.PublicKey, string, error) {
