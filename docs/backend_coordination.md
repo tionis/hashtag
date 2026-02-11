@@ -128,6 +128,49 @@ Signing note:
 - per-node refs DBs are intentionally unsigned in this model
 - rationale: any actor with write/delete access sufficient to forge refs can also directly delete blobs in object storage
 
+### Backend Blob Inventory Cache Model (Recommended)
+
+To avoid repeated full remote object scans on every client, keep an inventory snapshot produced by the GC worker.
+
+Core idea:
+
+- GC worker publishes a new immutable inventory DB snapshot each GC cycle.
+- GC worker updates a small `gc_info` pointer document after inventory publish completes.
+- clients hydrate the inventory DB when first seen or when `gc_info.generation` changes.
+- clients maintain a local-only overlay DB for newly uploaded/discovered blobs between GC generations.
+- overlay is never uploaded; it is discarded and rebuilt when generation changes.
+
+Suggested `gc_info` fields:
+
+- `generation` (monotonic opaque ID; required)
+- `completed_at_utc`
+- `inventory_db_key`
+- `inventory_db_hash`
+- `inventory_db_format_version`
+- `gc_worker_id`
+- `deleted_count`
+- `scanned_count`
+
+Worker flow:
+
+1. compute blob liveness and apply deletes.
+2. build full post-GC remote inventory DB.
+3. upload inventory DB to immutable generation key (for example `<object_prefix>/gc/inventory/<generation>/inventory.db`).
+4. publish/replace `gc_info` pointer only after inventory upload succeeds.
+
+Client flow:
+
+1. read `gc_info` using local TTL cache.
+2. if no local base inventory exists or generation differs, hydrate new base inventory DB.
+3. record local discoveries/uploads in overlay DB.
+4. answer "blob exists remotely" from `base UNION overlay`.
+5. periodically re-check `gc_info`; on generation change, reset overlay and rehydrate base.
+
+Safety assumption:
+
+- this optimization assumes remote blob deletions happen only via GC worker.
+- if out-of-band deletes are possible, clients must degrade to stricter verification paths.
+
 ### Option B: Master-Key Worker
 
 GC worker uses master key to read/decrypt per-node databases and derives references directly.
@@ -166,6 +209,7 @@ Medium-term:
 
 - migrate from JSON ref snapshots to Litestream-replicated per-node refs DBs
 - implement a dedicated GC worker that computes live sets via hydrated SQLite + CTEs
+- publish GC-generation inventory snapshots (`gc_info` + immutable inventory DB) for client-side remote cache bootstrap
 
 Long-term:
 

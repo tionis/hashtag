@@ -51,6 +51,9 @@ Planned scalability direction:
 - use per-node SQLite refs DBs replicated via Litestream
 - keep refs DBs unsigned by design (write/delete-capable attackers can already remove remote blobs directly)
 - let GC workers hydrate/attach node refs DBs and compute keep/remove sets with SQL (`ATTACH`, `UNION`, CTEs)
+- publish GC-generation inventory snapshots (`gc_info` + immutable `inventory.db`).
+- clients hydrate a base inventory DB by generation and maintain a local-only overlay of uploads/discoveries between GC runs.
+- clients reset overlay when generation changes.
 
 ## Remote Prerequisite
 

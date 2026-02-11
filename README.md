@@ -369,6 +369,7 @@ Blob notes:
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - `blob gc` is local-only and does not remove remote objects.
 - node refs publishing is being replaced by Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.
+- planned remote inventory cache flow uses GC generations: worker publishes immutable `inventory.db` snapshots and a `gc_info` pointer; clients hydrate per generation and keep local overlay updates between GC runs.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
