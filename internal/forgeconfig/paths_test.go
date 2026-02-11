@@ -40,6 +40,12 @@ func TestDerivedDefaultsFromXDG(t *testing.T) {
 	if got := RefsDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "refs.db") {
 		t.Fatalf("RefsDBPath mismatch: got %q", got)
 	}
+	if got := S3BlobsDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "s3-blobs.db") {
+		t.Fatalf("S3BlobsDBPath mismatch: got %q", got)
+	}
+	if got := S3BlobsOverlayDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "s3-blobs-overlay.db") {
+		t.Fatalf("S3BlobsOverlayDBPath mismatch: got %q", got)
+	}
 	if got := VectorEmbedDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "vector", "embeddings.db") {
 		t.Fatalf("VectorEmbedDBPath mismatch: got %q", got)
 	}

@@ -24,9 +24,9 @@ This document captures the current and planned S3-only replication model for For
 | `vector/queue.db` | `${FORGE_PATH_VECTOR_QUEUE_DB}` | `<object_prefix>/vector/queue` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
 | `embeddings.db` (hydrated ingest cache) | `${FORGE_PATH_VECTOR_HYDRATED_DB}` | Hydrated from embeddings replica stream | none (local cache) | Refreshed before/for ingest lookup prechecks | Implemented (best effort) |
 | `blob.db` | `${FORGE_PATH_BLOB_DB}` | none | n/a | Local-only metadata DB | Implemented local-only |
-| `refs.db` | `${FORGE_DATA_DIR}/refs.db` | `<object_prefix>/gc/node-refs/<node_id>/refs` | none | Daemon stream-up enabled (`forge replicate daemon`) | Implemented (stream-up only) |
-| `s3-blobs.db` (remote inventory base) | `${FORGE_DATA_DIR}/s3-blobs.db` (planned) | Published by GC worker under immutable generation key | none | Rehydrate when `gc_info.generation` changes | Planned |
-| `s3-blobs-overlay.db` | `${FORGE_DATA_DIR}/s3-blobs-overlay.db` (planned) | none (local-only) | n/a | Reset on generation change | Planned |
+| `refs.db` | `${FORGE_DATA_DIR}/refs.db` | `<object_prefix>/gc/node-refs/<node_id>/refs` | none | Maintained by blob flows + daemon stream-up (`forge replicate daemon`) | Implemented |
+| `s3-blobs.db` (remote inventory base) | `${FORGE_DATA_DIR}/s3-blobs.db` | Published by GC worker under immutable generation key | none | Rehydrate when `gc_info.generation` changes | Implemented |
+| `s3-blobs-overlay.db` | `${FORGE_DATA_DIR}/s3-blobs-overlay.db` | none (local-only) | n/a | Reset on generation change | Implemented |
 | `remote.db` | `${FORGE_PATH_REMOTE_DB}` | none | n/a | Local cache/trust state only | Implemented local-only |
 
 ## Flows
@@ -57,7 +57,7 @@ This document captures the current and planned S3-only replication model for For
 - Hydration is best effort: restore failures fall back to local existing cache (if present) or skip precheck cache with warning logs.
 - Use hydrated DB for local precheck to reduce upload/lookup churn.
 
-### 4. Remote Blob Inventory Cache
+### 4. Remote Blob Inventory Cache (Implemented)
 
 - GC worker publishes:
   - immutable `inventory.db` at generation-specific key

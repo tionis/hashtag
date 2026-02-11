@@ -35,18 +35,18 @@
 
 ### Phase 4: refs.db Integration
 
-- [ ] Create refs DB schema for node keep-set tracking.
-- [ ] Integrate refs updates into blob put/get/rm flows where appropriate.
-- [ ] Integrate refs updates into local blob GC root updates.
-- [ ] Ensure refs DB writes are idempotent and crash-safe.
+- [x] Create refs DB schema for node keep-set tracking.
+- [x] Integrate refs updates into blob put/get/rm flows where appropriate.
+- [x] Integrate refs updates into local blob GC root updates.
+- [x] Ensure refs DB writes are idempotent and crash-safe.
 
 ### Phase 5: Remote Inventory Cache
 
-- [ ] Implement GC worker output for immutable generation inventory DB snapshots.
-- [ ] Implement `gc_info` pointer publish/update flow.
-- [ ] Add client cache hydration into `${FORGE_DATA_DIR}/s3-blobs.db` on generation change.
-- [ ] Add local overlay cache `${FORGE_DATA_DIR}/s3-blobs-overlay.db` for discoveries/uploads.
-- [ ] Switch remote existence checks to `base UNION overlay`.
+- [x] Implement GC worker output for immutable generation inventory DB snapshots.
+- [x] Implement `gc_info` pointer publish/update flow.
+- [x] Add client cache hydration into `${FORGE_DATA_DIR}/s3-blobs.db` on generation change.
+- [x] Add local overlay cache `${FORGE_DATA_DIR}/s3-blobs-overlay.db` for discoveries/uploads.
+- [x] Switch remote existence checks to `base UNION overlay`.
 
 ### Phase 6: Hardening
 

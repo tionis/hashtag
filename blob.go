@@ -106,6 +106,7 @@ type blobListOutput struct {
 type blobGCOutput struct {
 	DB                   string `json:"db"`
 	CacheDir             string `json:"cache_dir"`
+	RefsDB               string `json:"refs_db,omitempty"`
 	SnapshotDB           string `json:"snapshot_db,omitempty"`
 	VectorQueueDB        string `json:"vector_queue_db,omitempty"`
 	Applied              bool   `json:"applied"`
@@ -147,6 +148,7 @@ type blobRemoteInventoryRow struct {
 func runBlobPutCommand(args []string) error {
 	defaultDB := defaultBlobDBPath()
 	defaultCache := defaultBlobCacheDir()
+	defaultRefsDB := defaultRefsDBPath()
 
 	fs := flag.NewFlagSet("blob put", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
@@ -159,6 +161,7 @@ func runBlobPutCommand(args []string) error {
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
+	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	remoteUpload := fs.Bool("remote", false, "Upload encrypted blob payload to configured remote S3")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	verbose := fs.Bool("v", false, "Verbose output")
@@ -240,6 +243,7 @@ func runBlobPutCommand(args []string) error {
 		}
 		remoteBackend = remoteStore.BackendName()
 		remoteBucket = remoteStore.BucketName()
+		s3Store, isS3Store := remoteStore.(*s3BlobRemoteStore)
 
 		pkg, err := encryptBlobData(plain)
 		if err != nil {
@@ -263,21 +267,57 @@ func runBlobPutCommand(args []string) error {
 			return err
 		}
 
-		if *verbose {
-			log.Printf("[blob] uploading %s to %s://%s", oid, remoteBackend, remoteBucket)
+		etag := cipherHash
+		objectKey := oid
+		if isS3Store {
+			if derivedObjectKey, objectKeyErr := s3Store.objectKeyForOID(oid); objectKeyErr == nil {
+				objectKey = derivedObjectKey
+			}
 		}
-		etag, err := remoteStore.PutBlob(ctx, oid, pkg.Encoded)
-		if err != nil {
-			return err
+
+		knownRemoteExists := false
+		if isS3Store && !s3Store.cfg.S3.Capabilities.ConditionalIfNoneMatch {
+			if cacheErr := hydrateRemoteInventoryCacheIfNeeded(ctx, s3Store); cacheErr != nil {
+				log.Printf("[blob] warning: refresh remote inventory cache: %v", cacheErr)
+			} else {
+				exists, existsErr := remoteOIDExistsInUnionCache(
+					defaultS3BlobsDBPath(),
+					defaultS3BlobsOverlayDBPath(),
+					remoteBackend,
+					remoteBucket,
+					oid,
+				)
+				if existsErr != nil {
+					log.Printf("[blob] warning: check remote inventory cache for %s: %v", oid, existsErr)
+				} else {
+					knownRemoteExists = exists
+				}
+			}
 		}
-		if etag == "" {
-			etag = cipherHash
+
+		if knownRemoteExists {
+			if *verbose {
+				log.Printf("[blob] skipping upload for %s; remote inventory cache reports object already present", oid)
+			}
+		} else {
+			if *verbose {
+				log.Printf("[blob] uploading %s to %s://%s", oid, remoteBackend, remoteBucket)
+			}
+			etag, err = remoteStore.PutBlob(ctx, oid, pkg.Encoded)
+			if err != nil {
+				return err
+			}
+			if etag == "" {
+				etag = cipherHash
+			}
+			uploaded = true
 		}
+
 		scanID := fmt.Sprintf("blob-put-%d", time.Now().UTC().UnixNano())
 		if err := upsertRemoteBlobInventory(tx, blobRemoteInventoryRow{
 			Backend:    remoteBackend,
 			Bucket:     remoteBucket,
-			ObjectKey:  oid,
+			ObjectKey:  objectKey,
 			OID:        oid,
 			Size:       cipherSize,
 			ETag:       etag,
@@ -287,11 +327,28 @@ func runBlobPutCommand(args []string) error {
 		}); err != nil {
 			return err
 		}
-		uploaded = true
+		if isS3Store {
+			if err := upsertRemoteDiscoveryForS3Store(s3Store, blobRemoteInventoryRow{
+				Backend:    remoteBackend,
+				Bucket:     remoteBucket,
+				ObjectKey:  objectKey,
+				OID:        oid,
+				Size:       cipherSize,
+				ETag:       etag,
+				CipherHash: cipherHash,
+				LastSeenNS: time.Now().UTC().UnixNano(),
+				ScanID:     scanID,
+			}); err != nil {
+				log.Printf("[blob] warning: upsert local remote inventory overlay for %s: %v", oid, err)
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit blob transaction: %w", err)
+	}
+	if err := upsertBlobLocalKeepRef(*refsDBPath, cid); err != nil {
+		return err
 	}
 
 	return renderBlobPutOutput(
@@ -315,6 +372,7 @@ func runBlobPutCommand(args []string) error {
 func runBlobGetCommand(args []string) error {
 	defaultDB := defaultBlobDBPath()
 	defaultCache := defaultBlobCacheDir()
+	defaultRefsDB := defaultRefsDBPath()
 
 	fs := flag.NewFlagSet("blob get", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
@@ -327,6 +385,7 @@ func runBlobGetCommand(args []string) error {
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
+	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	remoteFetch := fs.Bool("remote", false, "Fetch encrypted blob from configured remote S3 when local cache misses")
 	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
 	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
@@ -418,6 +477,7 @@ func runBlobGetCommand(args []string) error {
 	cacheHit := false
 	remoteBackend := ""
 	remoteBucket := ""
+	var remoteS3Store *s3BlobRemoteStore
 
 	if requestedCID != "" {
 		cachePath, err = blobPlainCachePath(*cacheDir, requestedCID)
@@ -458,6 +518,12 @@ func runBlobGetCommand(args []string) error {
 		}
 		remoteBackend = remoteStore.BackendName()
 		remoteBucket = remoteStore.BucketName()
+		if s3Store, ok := remoteStore.(*s3BlobRemoteStore); ok {
+			remoteS3Store = s3Store
+			if cacheErr := hydrateRemoteInventoryCacheIfNeeded(ctx, s3Store); cacheErr != nil {
+				log.Printf("[blob] warning: refresh remote inventory cache: %v", cacheErr)
+			}
+		}
 
 		if *verbose {
 			log.Printf("[blob] cache miss for %s, fetching from %s://%s", requestedOID, remoteBackend, remoteBucket)
@@ -548,11 +614,17 @@ func runBlobGetCommand(args []string) error {
 		if etag == "" {
 			etag = pkg.CipherHash
 		}
+		objectKey := pkg.OID
+		if remoteS3Store != nil {
+			if derivedObjectKey, objectKeyErr := remoteS3Store.objectKeyForOID(pkg.OID); objectKeyErr == nil {
+				objectKey = derivedObjectKey
+			}
+		}
 		scanID := fmt.Sprintf("blob-get-%d", time.Now().UTC().UnixNano())
 		if err := upsertRemoteBlobInventory(tx, blobRemoteInventoryRow{
 			Backend:    remoteBackend,
 			Bucket:     remoteBucket,
-			ObjectKey:  pkg.OID,
+			ObjectKey:  objectKey,
 			OID:        pkg.OID,
 			Size:       pkg.CipherSize,
 			ETag:       etag,
@@ -562,10 +634,28 @@ func runBlobGetCommand(args []string) error {
 		}); err != nil {
 			return err
 		}
+		if remoteS3Store != nil {
+			if err := upsertRemoteDiscoveryForS3Store(remoteS3Store, blobRemoteInventoryRow{
+				Backend:    remoteBackend,
+				Bucket:     remoteBucket,
+				ObjectKey:  objectKey,
+				OID:        pkg.OID,
+				Size:       pkg.CipherSize,
+				ETag:       etag,
+				CipherHash: pkg.CipherHash,
+				LastSeenNS: time.Now().UTC().UnixNano(),
+				ScanID:     scanID,
+			}); err != nil {
+				log.Printf("[blob] warning: upsert local remote inventory overlay for %s: %v", pkg.OID, err)
+			}
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit blob transaction: %w", err)
+	}
+	if err := upsertBlobLocalKeepRef(*refsDBPath, pkg.CID); err != nil {
+		return err
 	}
 
 	return renderBlobGetOutput(
@@ -651,6 +741,7 @@ func runBlobListCommand(args []string) error {
 func runBlobRemoveCommand(args []string) error {
 	defaultDB := defaultBlobDBPath()
 	defaultCache := defaultBlobCacheDir()
+	defaultRefsDB := defaultRefsDBPath()
 
 	fs := flag.NewFlagSet("blob rm", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
@@ -663,6 +754,7 @@ func runBlobRemoveCommand(args []string) error {
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
+	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
 	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
 	local := fs.Bool("local", true, "Delete local cached plaintext and local blob mapping metadata")
@@ -757,6 +849,7 @@ func runBlobRemoveCommand(args []string) error {
 	remoteRemoved := false
 	remoteBackend := ""
 	remoteBucket := ""
+	var remoteS3Store *s3BlobRemoteStore
 	if *remote {
 		ctx := context.Background()
 		remoteStore, err := openBlobRemoteStoreFunc(ctx)
@@ -765,6 +858,12 @@ func runBlobRemoveCommand(args []string) error {
 		}
 		remoteBackend = remoteStore.BackendName()
 		remoteBucket = remoteStore.BucketName()
+		if s3Store, ok := remoteStore.(*s3BlobRemoteStore); ok {
+			remoteS3Store = s3Store
+			if cacheErr := hydrateRemoteInventoryCacheIfNeeded(ctx, s3Store); cacheErr != nil {
+				log.Printf("[blob] warning: refresh remote inventory cache: %v", cacheErr)
+			}
+		}
 
 		remoteRemoved, err = remoteStore.DeleteBlob(ctx, requestedOID)
 		if err != nil {
@@ -803,6 +902,16 @@ func runBlobRemoveCommand(args []string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit blob remove transaction: %w", err)
 	}
+	if *local {
+		if err := deleteBlobLocalKeepRef(*refsDBPath, requestedCID); err != nil {
+			return err
+		}
+	}
+	if *remote && remoteS3Store != nil {
+		if err := recordRemoteDeleteForS3Store(remoteS3Store, requestedOID); err != nil {
+			log.Printf("[blob] warning: record remote deletion in local inventory caches for %s: %v", requestedOID, err)
+		}
+	}
 
 	return renderBlobRemoveOutput(
 		resolvedOutputMode,
@@ -825,6 +934,7 @@ func runBlobRemoveCommand(args []string) error {
 func runBlobGCCommand(args []string) error {
 	defaultDB := defaultBlobDBPath()
 	defaultCache := defaultBlobCacheDir()
+	defaultRefsDB := defaultRefsDBPath()
 	defaultSnapshot := defaultSnapshotDBPath()
 	defaultVectorQueue := defaultVectorQueueDBPathForGC()
 
@@ -840,6 +950,7 @@ func runBlobGCCommand(args []string) error {
 
 	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
+	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	snapshotDBPath := fs.String("snapshot-db", defaultSnapshot, "Path to snapshot database for tree-entry references")
 	vectorQueueDBPath := fs.String("vector-queue-db", defaultVectorQueue, "Path to vector queue database for payload references")
 	noSnapshotRefs := fs.Bool("no-snapshot-refs", false, "Disable snapshot tree-entry references as GC roots")
@@ -871,6 +982,10 @@ func runBlobGCCommand(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve cache dir: %w", err)
 	}
+	absRefsDBPath, err := filepath.Abs(*refsDBPath)
+	if err != nil {
+		return fmt.Errorf("resolve refs db path: %w", err)
+	}
 	absSnapshotDBPath, err := filepath.Abs(*snapshotDBPath)
 	if err != nil {
 		return fmt.Errorf("resolve snapshot db path: %w", err)
@@ -887,21 +1002,29 @@ func runBlobGCCommand(args []string) error {
 	defer db.Close()
 
 	live := make(map[string]struct{})
+	snapshotLive := make(map[string]struct{})
+	vectorLive := make(map[string]struct{})
 	snapshotRefs := 0
 	vectorRefs := 0
 	if !*noSnapshotRefs {
-		n, err := collectLiveBlobRefsFromSnapshotDB(absSnapshotDBPath, live)
+		n, err := collectLiveBlobRefsFromSnapshotDB(absSnapshotDBPath, snapshotLive)
 		if err != nil {
 			return err
 		}
 		snapshotRefs = n
+		mergeBlobCIDSets(live, snapshotLive)
 	}
 	if !*noVectorRefs {
-		n, err := collectLiveBlobRefsFromVectorQueueDB(absVectorQueueDBPath, *includeErrorJobs, live)
+		n, err := collectLiveBlobRefsFromVectorQueueDB(absVectorQueueDBPath, *includeErrorJobs, vectorLive)
 		if err != nil {
 			return err
 		}
 		vectorRefs = n
+		mergeBlobCIDSets(live, vectorLive)
+	}
+
+	if err := syncBlobGCReferenceSources(absRefsDBPath, !*noSnapshotRefs, snapshotLive, !*noVectorRefs, vectorLive); err != nil {
+		return err
 	}
 
 	rows, err := listAllBlobMappings(db)
@@ -944,6 +1067,13 @@ func runBlobGCCommand(args []string) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit blob gc transaction: %w", err)
 		}
+		staleLocalKeepRefs := make([]string, 0, len(deletePlanRows))
+		for _, row := range deletePlanRows {
+			staleLocalKeepRefs = append(staleLocalKeepRefs, row.CID)
+		}
+		if err := deleteBlobLocalKeepRefs(absRefsDBPath, staleLocalKeepRefs); err != nil {
+			return err
+		}
 
 		for _, row := range deletePlanRows {
 			cachePath := strings.TrimSpace(row.CachePath)
@@ -977,6 +1107,7 @@ func runBlobGCCommand(args []string) error {
 		blobGCOutput{
 			DB:                   absDBPath,
 			CacheDir:             absCacheDir,
+			RefsDB:               absRefsDBPath,
 			SnapshotDB:           absSnapshotDBPath,
 			VectorQueueDB:        absVectorQueueDBPath,
 			Applied:              *apply,
@@ -1156,6 +1287,7 @@ func renderBlobGCOutput(mode string, output blobGCOutput) error {
 	case outputModeKV:
 		fmt.Printf("db=%s\n", output.DB)
 		fmt.Printf("cache_dir=%s\n", output.CacheDir)
+		fmt.Printf("refs_db=%s\n", output.RefsDB)
 		fmt.Printf("snapshot_db=%s\n", output.SnapshotDB)
 		fmt.Printf("vector_queue_db=%s\n", output.VectorQueueDB)
 		fmt.Printf("applied=%t\n", output.Applied)
@@ -1178,6 +1310,7 @@ func renderBlobGCOutput(mode string, output blobGCOutput) error {
 		printPrettyFields([]outputField{
 			{Label: "Database", Value: output.DB},
 			{Label: "Cache Dir", Value: output.CacheDir},
+			{Label: "Refs DB", Value: output.RefsDB},
 			{Label: "Snapshot DB", Value: output.SnapshotDB},
 			{Label: "Vector Queue DB", Value: output.VectorQueueDB},
 			{Label: "Applied", Value: strconv.FormatBool(output.Applied)},
@@ -1209,6 +1342,12 @@ func defaultBlobCacheDir() string {
 
 func defaultVectorQueueDBPathForGC() string {
 	return forgeconfig.VectorQueueDBPath()
+}
+
+func mergeBlobCIDSets(dst map[string]struct{}, src map[string]struct{}) {
+	for cid := range src {
+		dst[cid] = struct{}{}
+	}
 }
 
 func openBlobDB(path string) (*sql.DB, error) {

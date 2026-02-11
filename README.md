@@ -337,9 +337,16 @@ forge blob rm [flags] -cid <cid>
 forge blob rm [flags] -oid <oid>
 ```
 
+Publish a GC inventory snapshot and pointer document:
+
+```bash
+forge blob inventory publish [flags]
+```
+
 Blob flags:
 - `-db`: blob metadata DB path (default from `${FORGE_PATH_BLOB_DB}` or `${FORGE_DATA_DIR}/blob.db`)
 - `-cache`: local plaintext blob cache dir (default from `${FORGE_PATH_BLOB_CACHE}` or `${FORGE_CACHE_DIR}/blobs`)
+- `-refs-db`: refs DB path for keep-set tracking (default from `${FORGE_PATH_REFS_DB}` or `${FORGE_DATA_DIR}/refs.db`)
 - `-remote`: upload/fetch/delete encrypted blob objects using configured S3 remote (`put/get/rm`)
 - `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
 - `-oid`: encrypted object ID selector for `blob get`/`blob rm`
@@ -352,6 +359,7 @@ Blob flags:
 Blob GC flags:
 - `-db`: blob metadata DB path to collect
 - `-cache`: local blob cache directory to collect
+- `-refs-db`: refs DB path to sync/update for local keep-set and derived references
 - `-snapshot-db`: snapshot DB root source (`tree_entries.kind='file'`)
 - `-vector-queue-db`: vector queue DB root source (`jobs.file_path` payload refs)
 - `-include-error-jobs`: include vector `status=error` jobs as roots (default `true`)
@@ -361,6 +369,12 @@ Blob GC flags:
 - `-output`: output mode `auto|pretty|kv|json`
 - `-v`: verbose output
 
+Blob inventory publish flags:
+- `-generation`: immutable generation ID (default unix nanos)
+- `-worker-id`: worker identifier
+- `-deleted-count`: deleted object count for `gc_info`
+- `-output`: output mode `auto|pretty|kv|json`
+
 Blob notes:
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
 - OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
@@ -369,10 +383,13 @@ Blob notes:
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - `blob gc` is local-only and does not remove remote objects.
 - node refs publishing is being replaced by Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.
-- planned remote inventory cache flow uses GC generations: worker publishes immutable `inventory.db` snapshots and a `gc_info` pointer; clients hydrate per generation and keep local overlay updates between GC runs.
+- `blob put` and `blob get` upsert local keep refs (`blob.local.keep`) in `refs.db`; local `blob rm` removes them.
+- `blob gc` refreshes derived refs (`snapshot.tree_entries`, `vector.queue`) in `refs.db` and prunes stale local keep refs for deleted CIDs.
+- remote inventory cache flow uses GC generations: workers publish immutable `inventory.db` snapshots and a `gc_info` pointer; clients hydrate `${FORGE_PATH_S3_BLOBS_DB}` per generation and keep local discoveries/uploads in `${FORGE_PATH_S3_BLOBS_OVERLAY_DB}`.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
+  - `blob_refs`: per-node keep-set references for Litestream replication / global GC workers.
 
 ## Vector Tool
 

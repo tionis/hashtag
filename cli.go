@@ -289,6 +289,24 @@ func newBlobCommand() *cobra.Command {
 		},
 	})
 
+	inventoryCmd := &cobra.Command{
+		Use:                "inventory",
+		Short:              "Manage remote blob inventory snapshots and gc_info pointer state.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+	inventoryCmd.AddCommand(&cobra.Command{
+		Use:                "publish [options]",
+		Short:              "Publish immutable remote inventory snapshot DB and update gc_info pointer.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBlobInventoryPublishCommand(args)
+		},
+	})
+	blobCmd.AddCommand(inventoryCmd)
+
 	return blobCmd
 }
 

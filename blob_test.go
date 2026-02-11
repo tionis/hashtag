@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tionis/forge/internal/forgeconfig"
 )
 
 type fakeBlobRemoteStore struct {
@@ -63,6 +65,11 @@ func withFakeBlobRemoteStore(t *testing.T, store blobRemoteStore) {
 	})
 }
 
+func withTempRefsDBPath(t *testing.T, tempDir string) {
+	t.Helper()
+	t.Setenv(forgeconfig.EnvRefsDBPath, filepath.Join(tempDir, "refs.db"))
+}
+
 func TestBlobEncryptDecryptDeterministic(t *testing.T) {
 	plain := []byte("forge-blob-deterministic-roundtrip")
 
@@ -105,6 +112,7 @@ func TestBlobEncryptDecryptDeterministic(t *testing.T) {
 
 func TestBlobPutGetAndListCommandsLocal(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	inputPath := filepath.Join(temp, "input.txt")
 	inputData := []byte("local-cache-roundtrip")
 	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
@@ -170,6 +178,7 @@ func TestBlobPutGetAndListCommandsLocal(t *testing.T) {
 
 func TestEnsurePlainBlobCacheObjectFallbackFromUnsupportedClone(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	cachePath := filepath.Join(temp, "cache", "a.blob")
 	sourcePath := filepath.Join(temp, "source.txt")
 	plain := []byte("fallback-from-unsupported-clone")
@@ -201,6 +210,7 @@ func TestEnsurePlainBlobCacheObjectFallbackFromUnsupportedClone(t *testing.T) {
 
 func TestBlobPutGetWithRemoteStore(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
 	withFakeBlobRemoteStore(t, remoteStore)
 
@@ -280,6 +290,7 @@ func TestBlobPutGetWithRemoteStore(t *testing.T) {
 
 func TestBlobRemoveCommandLocalByOID(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	inputPath := filepath.Join(temp, "input.txt")
 	inputData := []byte("remove-local-by-oid")
 	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
@@ -331,6 +342,7 @@ func TestBlobRemoveCommandLocalByOID(t *testing.T) {
 
 func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
 	withFakeBlobRemoteStore(t, remoteStore)
 
@@ -398,6 +410,7 @@ func TestBlobRemoveCommandLocalAndRemote(t *testing.T) {
 
 func TestBlobGCApplyKeepsSnapshotReferencedCID(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	dbPath := filepath.Join(temp, "blob.db")
 	cacheDir := filepath.Join(temp, "cache")
 	snapshotDBPath := filepath.Join(temp, "snapshot.db")
@@ -487,6 +500,7 @@ INSERT INTO tree_entries(target_hash, kind) VALUES (?, 'file');
 
 func TestBlobGCDryRunDoesNotDelete(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	dbPath := filepath.Join(temp, "blob.db")
 	cacheDir := filepath.Join(temp, "cache")
 	snapshotDBPath := filepath.Join(temp, "snapshot.db")
@@ -532,6 +546,7 @@ func TestBlobGCDryRunDoesNotDelete(t *testing.T) {
 
 func TestBlobGCApplyKeepsVectorQueueReferencedCID(t *testing.T) {
 	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
 	dbPath := filepath.Join(temp, "blob.db")
 	cacheDir := filepath.Join(temp, "cache")
 	snapshotDBPath := filepath.Join(temp, "snapshot.db")
@@ -588,5 +603,165 @@ INSERT INTO jobs(file_path, status) VALUES (?, 'pending');
 	}
 	if _, err := os.Stat(cachePath); err != nil {
 		t.Fatalf("expected cache file for queue-referenced cid to remain: %v", err)
+	}
+}
+
+func TestBlobPutAndGetUpsertLocalKeepRefs(t *testing.T) {
+	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	refsDBPath := filepath.Join(temp, "refs.db")
+	inputPath := filepath.Join(temp, "input.bin")
+	inputData := []byte("blob-refs-put-get")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", inputPath}); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	cid := blake3Hex(inputData)
+
+	refsDB, err := sql.Open("sqlite", refsDBPath)
+	if err != nil {
+		t.Fatalf("open refs db: %v", err)
+	}
+	defer refsDB.Close()
+
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceLocalKeep, cid, cid); got != 1 {
+		t.Fatalf("expected 1 local keep ref after put, got %d", got)
+	}
+
+	outPath := filepath.Join(temp, "output.bin")
+	if err := runBlobGetCommand([]string{"-db", dbPath, "-cache", cacheDir, "-cid", cid, "-out", outPath, "-output", "kv"}); err != nil {
+		t.Fatalf("get blob: %v", err)
+	}
+
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceLocalKeep, cid, cid); got != 1 {
+		t.Fatalf("expected local keep ref upsert to remain idempotent, got %d rows", got)
+	}
+}
+
+func TestBlobRemoveClearsLocalKeepRefs(t *testing.T) {
+	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	refsDBPath := filepath.Join(temp, "refs.db")
+	inputPath := filepath.Join(temp, "input.bin")
+	inputData := []byte("blob-refs-remove")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", inputPath}); err != nil {
+		t.Fatalf("put blob: %v", err)
+	}
+	cid := blake3Hex(inputData)
+
+	if err := runBlobRemoveCommand([]string{"-db", dbPath, "-cache", cacheDir, "-cid", cid, "-output", "kv"}); err != nil {
+		t.Fatalf("remove blob: %v", err)
+	}
+
+	refsDB, err := sql.Open("sqlite", refsDBPath)
+	if err != nil {
+		t.Fatalf("open refs db: %v", err)
+	}
+	defer refsDB.Close()
+
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, cid); got != 0 {
+		t.Fatalf("expected local keep ref to be removed, got %d", got)
+	}
+}
+
+func TestBlobGCSyncsSnapshotVectorRefsAndPrunesStaleLocalKeepRefs(t *testing.T) {
+	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	refsDBPath := filepath.Join(temp, "refs.db")
+	snapshotDBPath := filepath.Join(temp, "snapshot.db")
+	vectorQueueDBPath := filepath.Join(temp, "queue.db")
+
+	keepPath := filepath.Join(temp, "keep.bin")
+	dropPath := filepath.Join(temp, "drop.bin")
+	keepData := []byte("blob-refs-gc-keep")
+	dropData := []byte("blob-refs-gc-drop")
+	if err := os.WriteFile(keepPath, keepData, 0o644); err != nil {
+		t.Fatalf("write keep input: %v", err)
+	}
+	if err := os.WriteFile(dropPath, dropData, 0o644); err != nil {
+		t.Fatalf("write drop input: %v", err)
+	}
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", keepPath}); err != nil {
+		t.Fatalf("put keep blob: %v", err)
+	}
+	if err := runBlobPutCommand([]string{"-db", dbPath, "-cache", cacheDir, "-output", "kv", dropPath}); err != nil {
+		t.Fatalf("put drop blob: %v", err)
+	}
+	keepCID := blake3Hex(keepData)
+	dropCID := blake3Hex(dropData)
+
+	snapshotDB, err := sql.Open("sqlite", snapshotDBPath)
+	if err != nil {
+		t.Fatalf("open snapshot db: %v", err)
+	}
+	if _, err := snapshotDB.Exec(`
+CREATE TABLE tree_entries(
+	target_hash TEXT NOT NULL,
+	kind TEXT NOT NULL
+);
+INSERT INTO tree_entries(target_hash, kind) VALUES (?, 'file');
+`, keepCID); err != nil {
+		_ = snapshotDB.Close()
+		t.Fatalf("seed snapshot refs: %v", err)
+	}
+	_ = snapshotDB.Close()
+
+	queueDB, err := sql.Open("sqlite", vectorQueueDBPath)
+	if err != nil {
+		t.Fatalf("open queue db: %v", err)
+	}
+	if _, err := queueDB.Exec(`
+CREATE TABLE jobs(
+	file_path TEXT NOT NULL,
+	status TEXT NOT NULL
+);
+INSERT INTO jobs(file_path, status) VALUES (?, 'pending');
+`, keepCID); err != nil {
+		_ = queueDB.Close()
+		t.Fatalf("seed vector queue refs: %v", err)
+	}
+	_ = queueDB.Close()
+
+	if err := runBlobGCCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-snapshot-db", snapshotDBPath,
+		"-vector-queue-db", vectorQueueDBPath,
+		"-apply",
+		"-output", "kv",
+	}); err != nil {
+		t.Fatalf("run blob gc apply: %v", err)
+	}
+
+	refsDB, err := sql.Open("sqlite", refsDBPath)
+	if err != nil {
+		t.Fatalf("open refs db: %v", err)
+	}
+	defer refsDB.Close()
+
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceSnapshot, keepCID, keepCID); got != 1 {
+		t.Fatalf("expected snapshot source ref for keep cid, got %d", got)
+	}
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceVector, keepCID, keepCID); got != 1 {
+		t.Fatalf("expected vector source ref for keep cid, got %d", got)
+	}
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, dropCID); got != 0 {
+		t.Fatalf("expected stale local keep ref for dropped cid to be removed, got %d", got)
 	}
 }

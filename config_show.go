@@ -20,6 +20,8 @@ type effectivePathsOutput struct {
 	BlobCache        string `json:"blob_cache"`
 	RemoteDB         string `json:"remote_db"`
 	RefsDB           string `json:"refs_db"`
+	S3BlobsDB        string `json:"s3_blobs_db"`
+	S3BlobsOverlayDB string `json:"s3_blobs_overlay_db"`
 	VectorEmbedDB    string `json:"vector_embed_db"`
 	VectorQueueDB    string `json:"vector_queue_db"`
 	VectorTempDir    string `json:"vector_temp_dir"`
@@ -108,6 +110,8 @@ func runConfigShowCommand(args []string) error {
 			BlobCache:        forgeconfig.BlobCacheDir(),
 			RemoteDB:         forgeconfig.RemoteDBPath(),
 			RefsDB:           forgeconfig.RefsDBPath(),
+			S3BlobsDB:        forgeconfig.S3BlobsDBPath(),
+			S3BlobsOverlayDB: forgeconfig.S3BlobsOverlayDBPath(),
 			VectorEmbedDB:    forgeconfig.VectorEmbedDBPath(),
 			VectorQueueDB:    forgeconfig.VectorQueueDBPath(),
 			VectorTempDir:    forgeconfig.VectorTempDir(),
@@ -178,6 +182,8 @@ func renderEffectiveConfigOutput(mode string, output effectiveConfigOutput) erro
 		fmt.Printf("paths.blob_cache=%s\n", output.Paths.BlobCache)
 		fmt.Printf("paths.remote_db=%s\n", output.Paths.RemoteDB)
 		fmt.Printf("paths.refs_db=%s\n", output.Paths.RefsDB)
+		fmt.Printf("paths.s3_blobs_db=%s\n", output.Paths.S3BlobsDB)
+		fmt.Printf("paths.s3_blobs_overlay_db=%s\n", output.Paths.S3BlobsOverlayDB)
 		fmt.Printf("paths.vector_embed_db=%s\n", output.Paths.VectorEmbedDB)
 		fmt.Printf("paths.vector_queue_db=%s\n", output.Paths.VectorQueueDB)
 		fmt.Printf("paths.vector_temp_dir=%s\n", output.Paths.VectorTempDir)
@@ -229,6 +235,8 @@ func renderEffectiveConfigOutput(mode string, output effectiveConfigOutput) erro
 			{Label: "Blob Cache", Value: output.Paths.BlobCache},
 			{Label: "Remote DB", Value: output.Paths.RemoteDB},
 			{Label: "Refs DB", Value: output.Paths.RefsDB},
+			{Label: "S3 Blobs DB", Value: output.Paths.S3BlobsDB},
+			{Label: "S3 Blobs Overlay DB", Value: output.Paths.S3BlobsOverlayDB},
 			{Label: "Vector Embed DB", Value: output.Paths.VectorEmbedDB},
 			{Label: "Vector Queue DB", Value: output.Paths.VectorQueueDB},
 			{Label: "Vector Temp Dir", Value: output.Paths.VectorTempDir},

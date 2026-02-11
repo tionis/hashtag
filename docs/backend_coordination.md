@@ -30,7 +30,7 @@ Rationale:
 Status:
 
 - shared remote backend session loading is implemented for vector replication and blob remote store paths
-- node reference-set publication is moving to per-node SQLite refs DBs replicated via Litestream for remote/global blob GC workers
+- node reference-set publication uses per-node SQLite refs DBs replicated via Litestream for remote/global blob GC workers
 
 ## Trust Foundation
 
