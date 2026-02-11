@@ -37,6 +37,9 @@ func TestDerivedDefaultsFromXDG(t *testing.T) {
 	if got := RemoteDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "remote.db") {
 		t.Fatalf("RemoteDBPath mismatch: got %q", got)
 	}
+	if got := RefsDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "refs.db") {
+		t.Fatalf("RefsDBPath mismatch: got %q", got)
+	}
 	if got := VectorEmbedDBPath(); got != filepath.Join("/tmp/xdg-data", "forge", "vector", "embeddings.db") {
 		t.Fatalf("VectorEmbedDBPath mismatch: got %q", got)
 	}

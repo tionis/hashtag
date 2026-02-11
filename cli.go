@@ -87,6 +87,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newRemoteCommand())
 	root.AddCommand(newBlobCommand())
 	root.AddCommand(newVectorCommand())
+	root.AddCommand(newReplicateCommand())
 	root.AddCommand(newCompletionCommand(root))
 	return root
 }
@@ -443,6 +444,28 @@ func newVectorCommand() *cobra.Command {
 	})
 
 	return vectorCmd
+}
+
+func newReplicateCommand() *cobra.Command {
+	replicateCmd := &cobra.Command{
+		Use:                "replicate",
+		Short:              "Run background replication workflows.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	replicateCmd.AddCommand(&cobra.Command{
+		Use:                "daemon [options]",
+		Short:              "Run the background database replication daemon.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReplicateDaemonCommand(args)
+		},
+	})
+
+	return replicateCmd
 }
 
 func newTagsCommand() *cobra.Command {

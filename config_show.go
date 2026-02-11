@@ -19,6 +19,7 @@ type effectivePathsOutput struct {
 	BlobDB           string `json:"blob_db"`
 	BlobCache        string `json:"blob_cache"`
 	RemoteDB         string `json:"remote_db"`
+	RefsDB           string `json:"refs_db"`
 	VectorEmbedDB    string `json:"vector_embed_db"`
 	VectorQueueDB    string `json:"vector_queue_db"`
 	VectorTempDir    string `json:"vector_temp_dir"`
@@ -106,6 +107,7 @@ func runConfigShowCommand(args []string) error {
 			BlobDB:           forgeconfig.BlobDBPath(),
 			BlobCache:        forgeconfig.BlobCacheDir(),
 			RemoteDB:         forgeconfig.RemoteDBPath(),
+			RefsDB:           forgeconfig.RefsDBPath(),
 			VectorEmbedDB:    forgeconfig.VectorEmbedDBPath(),
 			VectorQueueDB:    forgeconfig.VectorQueueDBPath(),
 			VectorTempDir:    forgeconfig.VectorTempDir(),
@@ -175,6 +177,7 @@ func renderEffectiveConfigOutput(mode string, output effectiveConfigOutput) erro
 		fmt.Printf("paths.blob_db=%s\n", output.Paths.BlobDB)
 		fmt.Printf("paths.blob_cache=%s\n", output.Paths.BlobCache)
 		fmt.Printf("paths.remote_db=%s\n", output.Paths.RemoteDB)
+		fmt.Printf("paths.refs_db=%s\n", output.Paths.RefsDB)
 		fmt.Printf("paths.vector_embed_db=%s\n", output.Paths.VectorEmbedDB)
 		fmt.Printf("paths.vector_queue_db=%s\n", output.Paths.VectorQueueDB)
 		fmt.Printf("paths.vector_temp_dir=%s\n", output.Paths.VectorTempDir)
@@ -225,6 +228,7 @@ func renderEffectiveConfigOutput(mode string, output effectiveConfigOutput) erro
 			{Label: "Blob DB", Value: output.Paths.BlobDB},
 			{Label: "Blob Cache", Value: output.Paths.BlobCache},
 			{Label: "Remote DB", Value: output.Paths.RemoteDB},
+			{Label: "Refs DB", Value: output.Paths.RefsDB},
 			{Label: "Vector Embed DB", Value: output.Paths.VectorEmbedDB},
 			{Label: "Vector Queue DB", Value: output.Paths.VectorQueueDB},
 			{Label: "Vector Temp Dir", Value: output.Paths.VectorTempDir},

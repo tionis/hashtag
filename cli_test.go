@@ -46,6 +46,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"vector"}); err != nil {
 		t.Fatalf("expected vector command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"replicate"}); err != nil {
+		t.Fatalf("expected replicate command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"snapshot", "inspect"}); err != nil {
 		t.Fatalf("expected snapshot inspect command to be registered: %v", err)
 	}
@@ -129,6 +132,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	}
 	if _, _, err := root.Find([]string{"vector", "lease-status"}); err != nil {
 		t.Fatalf("expected vector lease-status command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"replicate", "daemon"}); err != nil {
+		t.Fatalf("expected replicate daemon command to be registered: %v", err)
 	}
 }
 

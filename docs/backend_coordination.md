@@ -94,14 +94,14 @@ Policy:
 - `forge vector serve` should not perform blob deletion
 - blob cleanup should be handled by dedicated GC workflows
 
-## Planned DB Replication Coverage
+## DB Replication Coverage
 
-Target replication model:
+Current replication model:
 
-- `snapshot.db` replicated by a background daemon using Litestream + age encryption.
+- `snapshot.db` replicated by `forge replicate daemon` using Litestream + age encryption.
 - encryption recipients for `snapshot.db`: node SSH key and master/root SSH key.
 - `vector/embeddings.db` and `vector/queue.db` restored/replicated by `forge vector serve` with lease enforcement.
-- `refs.db` replicated by background daemon without encryption.
+- `refs.db` replicated by `forge replicate daemon` without encryption.
 - `remote.db` remains local cache only.
 - `blob.db` remains local metadata only.
 
@@ -119,7 +119,7 @@ Each node maintains a local SQLite refs DB (`cid` keep-set) and replicates it to
 
 Suggested object layout:
 
-- `<object_prefix>/gc/node-refs/<node_id>/refs.db` (+ Litestream generation/state objects)
+- `<object_prefix>/gc/node-refs/<node_id>/refs` (+ Litestream generation/state objects)
 
 GC worker:
 

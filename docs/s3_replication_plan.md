@@ -1,6 +1,6 @@
 # S3 Replication and Hydration Plan
 
-This document captures the planned S3-only replication model for Forge.
+This document captures the current and planned S3-only replication model for Forge.
 
 ## Scope
 
@@ -19,24 +19,24 @@ This document captures the planned S3-only replication model for Forge.
 
 | Database | Local Path | Planned Replication Target | Encryption | Planned Restore Behavior | Status |
 |---|---|---|---|---|---|
-| `snapshot.db` | `${FORGE_PATH_SNAPSHOT_DB}` | S3 replica path via background daemon | age to node key + master/root key | Daemon-driven restore optional; local file remains authoritative for node workflows | Planned |
+| `snapshot.db` | `${FORGE_PATH_SNAPSHOT_DB}` | `<object_prefix>/db/snapshot` | age to node key + master/root key | Daemon stream-up enabled (`forge replicate daemon`) | Implemented |
 | `vector/embeddings.db` | `${FORGE_PATH_VECTOR_EMBED_DB}` | `<object_prefix>/vector/embeddings` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
 | `vector/queue.db` | `${FORGE_PATH_VECTOR_QUEUE_DB}` | `<object_prefix>/vector/queue` | age (Litestream) | Auto-restore on `forge vector serve` startup | Implemented |
 | `embeddings.db` (hydrated ingest cache) | `${FORGE_PATH_VECTOR_HYDRATED_DB}` | Hydrated from embeddings replica stream | none (local cache) | Refreshed before/for ingest lookup prechecks | Implemented (best effort) |
 | `blob.db` | `${FORGE_PATH_BLOB_DB}` | none | n/a | Local-only metadata DB | Implemented local-only |
-| `refs.db` | `${FORGE_DATA_DIR}/refs.db` (planned) | `<object_prefix>/gc/node-refs/<node_id>/refs.db` | none | Restored by workers/clients that need node refs state | Planned |
+| `refs.db` | `${FORGE_DATA_DIR}/refs.db` | `<object_prefix>/gc/node-refs/<node_id>/refs` | none | Daemon stream-up enabled (`forge replicate daemon`) | Implemented (stream-up only) |
 | `s3-blobs.db` (remote inventory base) | `${FORGE_DATA_DIR}/s3-blobs.db` (planned) | Published by GC worker under immutable generation key | none | Rehydrate when `gc_info.generation` changes | Planned |
 | `s3-blobs-overlay.db` | `${FORGE_DATA_DIR}/s3-blobs-overlay.db` (planned) | none (local-only) | n/a | Reset on generation change | Planned |
 | `remote.db` | `${FORGE_PATH_REMOTE_DB}` | none | n/a | Local cache/trust state only | Implemented local-only |
 
-## Planned Flows
+## Flows
 
-### 1. Background Daemon Replication
+### 1. Background Daemon Replication (Implemented)
 
-- Stream `snapshot.db` to S3 using Litestream + age recipients:
+- `forge replicate daemon` streams `snapshot.db` to S3 using Litestream + age recipients:
   - node SSH key recipient
   - master/root SSH key recipient
-- Stream `refs.db` to S3 without encryption.
+- `forge replicate daemon` streams `refs.db` to S3 without encryption.
 - Daemon is responsible for long-running replication and retry behavior.
 
 ### 2. Vector Service Replication

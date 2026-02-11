@@ -27,11 +27,11 @@
 
 ### Phase 3: Background Daemon Replication
 
-- [ ] Add background replication daemon command/workflow.
-- [ ] Stream `${FORGE_PATH_SNAPSHOT_DB}` with Litestream + age encryption.
-- [ ] Configure snapshot replica recipients: node SSH key + master/root SSH key.
-- [ ] Stream `${FORGE_DATA_DIR}/refs.db` without encryption.
-- [ ] Define per-db replica key layout under S3 `object_prefix`.
+- [x] Add background replication daemon command/workflow.
+- [x] Stream `${FORGE_PATH_SNAPSHOT_DB}` with Litestream + age encryption.
+- [x] Configure snapshot replica recipients: node SSH key + master/root SSH key.
+- [x] Stream `${FORGE_DATA_DIR}/refs.db` without encryption.
+- [x] Define per-db replica key layout under S3 `object_prefix`.
 
 ### Phase 4: refs.db Integration
 

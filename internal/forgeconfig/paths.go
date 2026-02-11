@@ -14,6 +14,7 @@ const (
 	EnvBlobDBPath           = "FORGE_PATH_BLOB_DB"
 	EnvBlobCacheDir         = "FORGE_PATH_BLOB_CACHE"
 	EnvRemoteDBPath         = "FORGE_PATH_REMOTE_DB"
+	EnvRefsDBPath           = "FORGE_PATH_REFS_DB"
 	EnvVectorEmbedDBPath    = "FORGE_PATH_VECTOR_EMBED_DB"
 	EnvVectorQueueDBPath    = "FORGE_PATH_VECTOR_QUEUE_DB"
 	EnvVectorTempDir        = "FORGE_PATH_VECTOR_TEMP_DIR"
@@ -72,6 +73,13 @@ func RemoteDBPath() string {
 		return custom
 	}
 	return filepath.Join(DataDir(), "remote.db")
+}
+
+func RefsDBPath() string {
+	if custom := strings.TrimSpace(os.Getenv(EnvRefsDBPath)); custom != "" {
+		return custom
+	}
+	return filepath.Join(DataDir(), "refs.db")
 }
 
 func VectorEmbedDBPath() string {
