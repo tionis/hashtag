@@ -8,6 +8,10 @@
 - `forge vector ingest [flags]`
 - `forge vector lease-status [options]`
 
+Planned command change:
+
+- remove `-replication`; replication/restore becomes default for `forge vector serve`.
+
 ## Service: `forge vector serve`
 
 Runs the embedding coordinator:
@@ -43,14 +47,20 @@ Local storage env overrides:
 
 Replication:
 
-- Default is local-only (no remote streaming).
-- `-replication` enables remote replica URL derivation from Forge global remote config.
-- Requires remote bootstrap env (`FORGE_S3_BUCKET` and related S3 env used by `forge remote config`).
-- Replica target path is derived as `<object_prefix>/vector/embeddings`.
-- On startup, if replication is enabled and local embeddings DB is missing, restore is attempted first.
-- Replicated mode acquires and renews an S3-backed writer lease; on lease loss, service write path is stopped to avoid multi-writer overwrite scenarios.
-- Lease behavior is configured in remote config under `coordination.vector_writer_lease` (mode/resource/duration/renew interval).
-- `forge vector lease-status` inspects current lease object state (`owner_id`, `lease_id`, expiry, mode) for debugging/fencing visibility.
+Current implementation:
+
+- local-only unless `-replication` is provided
+- replica target path is derived as `<object_prefix>/vector/embeddings`
+- startup restore applies to embeddings DB when replication is enabled
+- lease behavior is configured in remote config under `coordination.vector_writer_lease` (mode/resource/duration/renew interval)
+- `forge vector lease-status` inspects current lease object state (`owner_id`, `lease_id`, expiry, mode)
+
+Planned target:
+
+- replication is always enabled for `forge vector serve`
+- both `vector/embeddings.db` and `vector/queue.db` are restored on startup
+- both databases are streamed during runtime
+- writer lease is acquired before write-serving and enforced continuously
 
 ## Client: `forge vector ingest`
 
@@ -71,6 +81,7 @@ Flags:
 Notes:
 
 - Upload validation compares `X-File-Hash` to uploaded content BLAKE3.
+- Planned hydration path: ingest refreshes `${FORGE_PATH_VECTOR_HYDRATED_DB}` from replica state before/for precheck filtering.
 
 ## API Contract
 
@@ -118,8 +129,15 @@ Local files:
 
 Remote files:
 
-- Only `embeddings.db` Litestream replica (when `-replication` is enabled).
-- Queue DB and payload spool are local-only.
+Current implementation:
+
+- only `embeddings.db` Litestream replica (when `-replication` is enabled)
+- queue DB and payload spool are local-only
+
+Planned target:
+
+- `embeddings.db` and `queue.db` are both replicated via Litestream
+- payload spool remains local-only
 
 GC boundary:
 

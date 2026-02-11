@@ -420,8 +420,8 @@ Vector payload spool storage uses the shared blob store paths:
 - `FORGE_PATH_BLOB_CACHE`
 
 Replication behavior:
-- By default, `forge vector serve` runs local-only (no replication).
-- Use `forge vector serve -replication` to derive Litestream replica URL from Forge remote config (`forge remote config ...`) and stream to S3.
+- Current implementation: `forge vector serve` runs local-only unless `-replication` is set.
+- Planned target: replication becomes default, `-replication` is removed, and both `vector/embeddings.db` and `vector/queue.db` are restored/streamed under lease control.
 
 `forge vector ingest` flags:
 - `-server` coordinator base URL (default `http://localhost:8080`)
@@ -438,6 +438,7 @@ Vector upload queue behavior:
 - Uploads are staged briefly under `FORGE_PATH_VECTOR_TEMP_DIR`.
 - Payloads are then stored in local blob cache (`blob_map` + `FORGE_PATH_BLOB_CACHE`) and queue records store payload CIDs.
 - Worker reads payload content by CID from blob cache (with legacy file-path fallback for pre-migration queue rows).
+- Planned ingest hydration: `forge vector ingest` hydrates `${FORGE_PATH_VECTOR_HYDRATED_DB}` from S3 replica state for precheck acceleration.
 
 ## Tags Tool
 
@@ -467,6 +468,7 @@ Notes:
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
 - Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
 - Backend coordination: [`docs/backend_coordination.md`](docs/backend_coordination.md)
+- S3 replication plan: [`docs/s3_replication_plan.md`](docs/s3_replication_plan.md)
 - Hashmap tool: [`docs/hashmap_tool.md`](docs/hashmap_tool.md)
 - Tags tool: [`docs/tags_tool.md`](docs/tags_tool.md)
 - Remote tool: [`docs/remote_tool.md`](docs/remote_tool.md)

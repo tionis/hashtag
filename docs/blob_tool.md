@@ -49,10 +49,11 @@ By default `blob gc` is dry-run and only reports a delete plan. Use `-apply` to 
 Planned scalability direction:
 
 - use per-node SQLite refs DBs replicated via Litestream
+- planned refs DB local path: `${FORGE_DATA_DIR}/refs.db`
 - keep refs DBs unsigned by design (write/delete-capable attackers can already remove remote blobs directly)
 - let GC workers hydrate/attach node refs DBs and compute keep/remove sets with SQL (`ATTACH`, `UNION`, CTEs)
 - publish GC-generation inventory snapshots (`gc_info` + immutable `inventory.db`).
-- clients hydrate a base inventory DB by generation and maintain a local-only overlay of uploads/discoveries between GC runs.
+- clients hydrate base inventory into `${FORGE_DATA_DIR}/s3-blobs.db` and maintain local-only updates in `${FORGE_DATA_DIR}/s3-blobs-overlay.db`.
 - clients reset overlay when generation changes.
 
 ## Remote Prerequisite

@@ -11,6 +11,7 @@ This folder contains architecture notes and tool contracts for Forge.
 - `snapshot_architecture.md`: snapshot schema, canonical hashing, tag normalization, and safety constraints.
 - `relay_architecture.md`: Nostr-inspired relay design for events, locking, and coordination primitives.
 - `backend_coordination.md`: S3 coordination/lease model and global blob GC design options.
+- `s3_replication_plan.md`: planned per-database S3 replication, hydration, and GC inventory model.
 - `hashmap_tool.md`: `forge hashmap` command model and mapping-table semantics.
 - `tags_tool.md`: `forge tags` xattr tag-management behavior and output.
 - `remote_tool.md`: `forge remote` global S3 backend configuration.

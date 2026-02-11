@@ -94,6 +94,23 @@ Policy:
 - `forge vector serve` should not perform blob deletion
 - blob cleanup should be handled by dedicated GC workflows
 
+## Planned DB Replication Coverage
+
+Target replication model:
+
+- `snapshot.db` replicated by a background daemon using Litestream + age encryption.
+- encryption recipients for `snapshot.db`: node SSH key and master/root SSH key.
+- `vector/embeddings.db` and `vector/queue.db` restored/replicated by `forge vector serve` with lease enforcement.
+- `refs.db` replicated by background daemon without encryption.
+- `remote.db` remains local cache only.
+- `blob.db` remains local metadata only.
+
+Inventory cache target:
+
+- GC worker publishes immutable generation inventory DB snapshots.
+- worker updates `gc_info` pointer after successful publish.
+- clients hydrate inventory base DB on generation change and keep local overlay updates between GC runs.
+
 ## Global Blob GC Approaches
 
 ### Option A: Published Reference DBs via Litestream (Recommended)
