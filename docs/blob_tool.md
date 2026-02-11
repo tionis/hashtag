@@ -9,7 +9,6 @@
 - `forge blob get [options] -oid <oid> -out <path>`
 - `forge blob ls [options]`
 - `forge blob gc [options]`
-- `forge blob refs publish [options]`
 - `forge blob rm [options] -cid <cid>`
 - `forge blob rm [options] -oid <oid>`
 
@@ -23,7 +22,7 @@
 - Local `blob put` attempts a CoW reflink clone into cache first, then falls back to a regular copy.
 - Remote access for `put/get/rm` is enabled with `-remote` and uses global config from `forge remote config`.
 - `blob gc` is local-only and prunes unreferenced `blob_map` rows/cache objects from local GC roots.
-- `blob refs publish` builds a node-scoped live CID set from local roots and publishes it to S3 for global GC workers.
+- node refs publishing is migrating to Litestream-replicated per-node SQLite refs DBs for global GC workers.
 
 ## Metadata Tables
 
@@ -37,7 +36,6 @@
 ## Output Modes
 
 `put`, `get`, `ls`, `gc`, and `rm` support `-output auto|pretty|kv|json`.
-`blob refs publish` also supports `-output auto|pretty|kv|json`.
 
 ## Local GC Roots
 
@@ -48,11 +46,11 @@
 
 By default `blob gc` is dry-run and only reports a delete plan. Use `-apply` to delete local rows/files.
 
-`forge blob refs publish` uses the same root discovery inputs and writes:
+Planned scalability direction:
 
-- object path: `<object_prefix>/gc/node-refs/<node_id>.json`
-- schema: `forge.blob_refs.v1`
-- payload: sorted `cids`, `cid_set_hash`, root stats, timestamps, optional expiry (`-ttl`)
+- use per-node SQLite refs DBs replicated via Litestream
+- keep refs DBs unsigned by design (write/delete-capable attackers can already remove remote blobs directly)
+- let GC workers hydrate/attach node refs DBs and compute keep/remove sets with SQL (`ATTACH`, `UNION`, CTEs)
 
 ## Remote Prerequisite
 

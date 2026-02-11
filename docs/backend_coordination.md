@@ -30,7 +30,7 @@ Rationale:
 Status:
 
 - shared remote backend session loading is implemented for vector replication and blob remote store paths
-- node reference-set publishing is implemented via `forge blob refs publish` as a foundation for remote/global blob GC workers
+- node reference-set publication is moving to per-node SQLite refs DBs replicated via Litestream for remote/global blob GC workers
 
 ## Trust Foundation
 
@@ -96,25 +96,37 @@ Policy:
 
 ## Global Blob GC Approaches
 
-### Option A: Published Reference Tables (Recommended)
+### Option A: Published Reference DBs via Litestream (Recommended)
 
-Each node publishes a reference set (CIDs to keep) under a node-scoped location.
+Each node maintains a local SQLite refs DB (`cid` keep-set) and replicates it to object storage with Litestream under a node-scoped location.
+
+Suggested object layout:
+
+- `<object_prefix>/gc/node-refs/<node_id>/refs.db` (+ Litestream generation/state objects)
 
 GC worker:
 
-- reads active node reference sets
-- computes live union
+- hydrates/mirrors per-node refs DBs locally
+- uses `ATTACH` + `UNION`/CTEs to compute live union/deltas
 - deletes remote blobs not referenced by any active set
 
 Pros:
 
+- incremental replication bandwidth (changed SQLite pages only)
 - avoids decrypting all node databases
+- SQL-native set operations for large unions/diffs
 - no per-blob claim object overhead
 - deterministic and scalable
 
 Cons:
 
-- each node must maintain/publish a reference dataset
+- each node must maintain/publish a reference DB
+- requires Litestream restore/hydration handling in GC workers
+
+Signing note:
+
+- per-node refs DBs are intentionally unsigned in this model
+- rationale: any actor with write/delete access sufficient to forge refs can also directly delete blobs in object storage
 
 ### Option B: Master-Key Worker
 
@@ -152,7 +164,8 @@ Short-term:
 
 Medium-term:
 
-- implement published node reference sets and a dedicated GC worker for remote blob cleanup
+- migrate from JSON ref snapshots to Litestream-replicated per-node refs DBs
+- implement a dedicated GC worker that computes live sets via hydrated SQLite + CTEs
 
 Long-term:
 

@@ -337,12 +337,6 @@ forge blob rm [flags] -cid <cid>
 forge blob rm [flags] -oid <oid>
 ```
 
-Publish node-scoped live blob references for global GC workers:
-
-```bash
-forge blob refs publish [flags]
-```
-
 Blob flags:
 - `-db`: blob metadata DB path (default from `${FORGE_PATH_BLOB_DB}` or `${FORGE_DATA_DIR}/blob.db`)
 - `-cache`: local plaintext blob cache dir (default from `${FORGE_PATH_BLOB_CACHE}` or `${FORGE_CACHE_DIR}/blobs`)
@@ -367,17 +361,6 @@ Blob GC flags:
 - `-output`: output mode `auto|pretty|kv|json`
 - `-v`: verbose output
 
-Blob refs publish flags:
-- `-node`: node ID for the published reference set (default `${FORGE_NODE_ID}` or hostname)
-- `-prefix`: object-key prefix under global `object_prefix` (default `gc/node-refs`)
-- `-ttl`: expiry timestamp window in seconds for this published set (default `86400`; `0` disables expiry)
-- `-snapshot-db`: snapshot DB root source (`tree_entries.kind='file'`)
-- `-vector-queue-db`: vector queue DB root source (`jobs.file_path` payload refs)
-- `-include-error-jobs`: include vector `status=error` jobs as roots
-- `-no-snapshot-refs`: disable snapshot roots
-- `-no-vector-refs`: disable vector queue roots
-- `-output`: output mode `auto|pretty|kv|json`
-
 Blob notes:
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
 - OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
@@ -385,7 +368,7 @@ Blob notes:
 - Remote objects are written under a deterministic key layout derived from global remote config.
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - `blob gc` is local-only and does not remove remote objects.
-- `blob refs publish` writes `<object_prefix>/gc/node-refs/<node_id>.json` (`forge.blob_refs.v1`) with sorted CIDs and a deterministic set hash.
+- node refs publishing is being replaced by Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
