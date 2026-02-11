@@ -255,6 +255,21 @@ Show global remote config object from S3:
 forge remote config show [flags]
 ```
 
+Update mutable global remote config values:
+
+```bash
+forge remote config set [flags]
+```
+
+Manage trust nodes in global remote config:
+
+```bash
+forge remote config node list [flags]
+forge remote config node add [flags]
+forge remote config node update [flags]
+forge remote config node remove [flags]
+```
+
 Remote config is loaded from S3 using environment bootstrap:
 - `FORGE_S3_BUCKET` (required)
 - `FORGE_S3_REGION` (default `us-east-1`)
@@ -265,6 +280,7 @@ Remote config is loaded from S3 using environment bootstrap:
 - `FORGE_REMOTE_CONFIG_KEY` (default `forge/config.json`)
 - `FORGE_PATH_REMOTE_DB` (optional local config-cache DB path; default `${FORGE_DATA_DIR}/remote.db`)
 - `FORGE_TRUST_SIGNING_KEY` (optional default path for `forge remote config init -signing-key`)
+- `FORGE_TRUST_SIGNING_KEY_PASSPHRASE` (optional default passphrase for encrypted keys)
 
 Forge trust roots are non-overridable and are compiled from `forge.pub`.
 
@@ -278,9 +294,12 @@ Forge trust roots are non-overridable and are compiled from `forge.pub`.
 
 Remote config is signed:
 - `forge remote config init -signing-key <path>` signs the config envelope using an OpenSSH private key.
+- `-signing-key-passphrase <value>` unlocks encrypted OpenSSH private keys.
+- If passphrase is required and omitted, Forge prompts interactively (hidden input) when stdin is a TTY.
 - Optional: `-doc-version <int64>` and `-doc-expires-seconds <seconds>` (`0` disables expiry).
 - Optional trust map input: `-trust-nodes-file <json>` + `-root-node-name <name>`.
-- Forge verifies signatures against compiled trust roots and enforces local anti-rollback state in `${XDG_DATA_HOME}/forge/remote.db`.
+- Forge verifies signatures against compiled trust roots and enforces local anti-rollback state in `${FORGE_PATH_REMOTE_DB}` (default `${FORGE_DATA_DIR}/remote.db`).
+- `forge remote config set` and `forge remote config node ...` use the same signed write path.
 
 ## Blob Tool
 
@@ -397,14 +416,14 @@ forge vector lease-status [flags]
 ```
 
 `forge vector serve` runtime environment:
-- `LISTEN_ADDR` (default `:8080`)
-- `IMAGE_WORKER_URL` (default `http://localhost:3003`; falls back to `WORKER_URL`)
-- `TEXT_WORKER_URL` (default `IMAGE_WORKER_URL`)
-- `WORKER_CONCURRENCY` (default `20`)
-- `LOOKUP_CHUNK_SIZE` (default `500`)
-- `QUEUE_ACK_TIMEOUT_MS` (default `5000`)
-- `MAX_PENDING_JOBS` (default `5000`)
-- `MAX_JOB_ATTEMPTS` (default `3`)
+- `FORGE_VECTOR_LISTEN_ADDR` (default `:8080`)
+- `FORGE_VECTOR_IMAGE_WORKER_URL` (default `http://localhost:3003`; falls back to `FORGE_VECTOR_WORKER_URL`)
+- `FORGE_VECTOR_TEXT_WORKER_URL` (default `FORGE_VECTOR_IMAGE_WORKER_URL`)
+- `FORGE_VECTOR_WORKER_CONCURRENCY` (default `20`)
+- `FORGE_VECTOR_LOOKUP_CHUNK_SIZE` (default `500`)
+- `FORGE_VECTOR_QUEUE_ACK_TIMEOUT_MS` (default `5000`)
+- `FORGE_VECTOR_MAX_PENDING_JOBS` (default `5000`)
+- `FORGE_VECTOR_MAX_JOB_ATTEMPTS` (default `3`)
 - `FORGE_VECTOR_REPLICA_RESTORE_ON_START` (default `true`)
 
 Local vector storage paths use:

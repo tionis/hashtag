@@ -6,6 +6,11 @@
 
 - `forge remote config init [options]`
 - `forge remote config show [options]`
+- `forge remote config set [options]`
+- `forge remote config node list [options]`
+- `forge remote config node add [options]`
+- `forge remote config node update [options]`
+- `forge remote config node remove [options]`
 
 `forge remote config init` probes S3 conditional-write behavior by default and stores detected capability flags in the config object:
 - `conditional_if_none_match`
@@ -31,10 +36,18 @@ Set vector writer lease policy during init:
 Signed config controls:
 
 - `-signing-key=<path>` OpenSSH private key used to sign the config document
+- `-signing-key-passphrase=<value>` passphrase for encrypted OpenSSH private key
+- when passphrase is required and not provided, Forge prompts interactively (hidden input) on TTY sessions
 - `-doc-version=<int64>` signed document version (`auto` if omitted)
 - `-doc-expires-seconds=<seconds>` optional signed document expiry (`0` disables expiry)
 - `-trust-nodes-file=<path>` optional JSON trust node list
 - `-root-node-name=<name>` node name assigned to signing root key in trust map
+
+Mutable update controls:
+
+- `forge remote config set` updates selected config fields without rewriting all values.
+- `forge remote config node ...` manages `trust.nodes` entries directly.
+- update commands share signing controls and support `-doc-expires-seconds=-1` to preserve current expiry.
 
 ## Bootstrap Environment
 
@@ -49,6 +62,7 @@ Remote config is read/written via S3 using environment bootstrap:
 - `FORGE_REMOTE_CONFIG_KEY` (default `forge/config.json`)
 - `FORGE_PATH_REMOTE_DB` (optional local SQLite cache path; default `${FORGE_DATA_DIR}/remote.db`)
 - `FORGE_TRUST_SIGNING_KEY` (optional default for `-signing-key`)
+- `FORGE_TRUST_SIGNING_KEY_PASSPHRASE` (optional default for `-signing-key-passphrase`)
 
 Trust roots are non-overridable and compiled from `forge.pub`.
 

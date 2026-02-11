@@ -21,14 +21,14 @@ Runs the embedding coordinator:
 
 Runtime env:
 
-- `LISTEN_ADDR` (default `:8080`)
-- `IMAGE_WORKER_URL` (default `http://localhost:3003`, fallback `WORKER_URL`)
-- `TEXT_WORKER_URL` (default `IMAGE_WORKER_URL`)
-- `WORKER_CONCURRENCY` (default `20`)
-- `LOOKUP_CHUNK_SIZE` (default `500`)
-- `QUEUE_ACK_TIMEOUT_MS` (default `5000`)
-- `MAX_PENDING_JOBS` (default `5000`)
-- `MAX_JOB_ATTEMPTS` (default `3`)
+- `FORGE_VECTOR_LISTEN_ADDR` (default `:8080`)
+- `FORGE_VECTOR_IMAGE_WORKER_URL` (default `http://localhost:3003`, fallback `FORGE_VECTOR_WORKER_URL`)
+- `FORGE_VECTOR_TEXT_WORKER_URL` (default `FORGE_VECTOR_IMAGE_WORKER_URL`)
+- `FORGE_VECTOR_WORKER_CONCURRENCY` (default `20`)
+- `FORGE_VECTOR_LOOKUP_CHUNK_SIZE` (default `500`)
+- `FORGE_VECTOR_QUEUE_ACK_TIMEOUT_MS` (default `5000`)
+- `FORGE_VECTOR_MAX_PENDING_JOBS` (default `5000`)
+- `FORGE_VECTOR_MAX_JOB_ATTEMPTS` (default `3`)
 - `FORGE_VECTOR_REPLICA_RESTORE_ON_START` (default `true`)
 
 Local storage env overrides:
@@ -88,7 +88,7 @@ Notes:
   - `200`: already present in embeddings DB
 - Expected non-success:
   - `400`: invalid headers/body/hash mismatch
-  - `429`: queue backlog over `MAX_PENDING_JOBS`
+  - `429`: queue backlog over `FORGE_VECTOR_MAX_PENDING_JOBS`
   - `503`: queue ACK timeout
 
 `GET /healthz`
@@ -97,7 +97,7 @@ Notes:
 
 ## Worker Contract
 
-Workers are called at `<IMAGE_WORKER_URL|TEXT_WORKER_URL>/predict` with:
+Workers are called at `<FORGE_VECTOR_IMAGE_WORKER_URL|FORGE_VECTOR_TEXT_WORKER_URL>/predict` with:
 
 - headers: `X-Embedding-Kind`, `X-File-Hash`
 - body: raw file bytes
