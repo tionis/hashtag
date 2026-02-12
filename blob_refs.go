@@ -51,12 +51,12 @@ func initBlobRefsSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS blob_refs (
 			source TEXT NOT NULL,
 			ref_key TEXT NOT NULL,
-			cid TEXT NOT NULL,
+			oid TEXT NOT NULL,
 			created_at_ns INTEGER NOT NULL,
 			updated_at_ns INTEGER NOT NULL,
 			PRIMARY KEY(source, ref_key)
 		);`,
-		"CREATE INDEX IF NOT EXISTS blob_refs_cid_idx ON blob_refs(cid);",
+		"CREATE INDEX IF NOT EXISTS blob_refs_oid_idx ON blob_refs(oid);",
 		"CREATE INDEX IF NOT EXISTS blob_refs_source_idx ON blob_refs(source);",
 	}
 	for _, stmt := range stmts {
@@ -64,10 +64,44 @@ func initBlobRefsSchema(db *sql.DB) error {
 			return fmt.Errorf("initialize refs db schema: %w", err)
 		}
 	}
+	if err := validateBlobRefsSchema(db); err != nil {
+		return err
+	}
 	return nil
 }
 
-func upsertBlobLocalKeepRef(dbPath string, cid string) error {
+func validateBlobRefsSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(blob_refs)`)
+	if err != nil {
+		return fmt.Errorf("inspect refs db schema: %w", err)
+	}
+	defer rows.Close()
+
+	hasOID := false
+	for rows.Next() {
+		var colID int
+		var name string
+		var colType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&colID, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan refs db schema row: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "oid") {
+			hasOID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate refs db schema rows: %w", err)
+	}
+	if !hasOID {
+		return fmt.Errorf("unsupported refs db schema at current path: expected blob_refs.oid column; remove/reset refs db to reinitialize")
+	}
+	return nil
+}
+
+func upsertBlobLocalKeepRef(dbPath string, oid string) error {
 	db, err := openBlobRefsDB(dbPath)
 	if err != nil {
 		return err
@@ -80,7 +114,7 @@ func upsertBlobLocalKeepRef(dbPath string, cid string) error {
 	}
 	defer tx.Rollback()
 
-	if err := upsertBlobRef(tx, blobRefSourceLocalKeep, cid, cid, time.Now().UTC().UnixNano()); err != nil {
+	if err := upsertBlobRef(tx, blobRefSourceLocalKeep, oid, oid, time.Now().UTC().UnixNano()); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -89,7 +123,7 @@ func upsertBlobLocalKeepRef(dbPath string, cid string) error {
 	return nil
 }
 
-func deleteBlobLocalKeepRef(dbPath string, cid string) error {
+func deleteBlobLocalKeepRef(dbPath string, oid string) error {
 	db, err := openBlobRefsDB(dbPath)
 	if err != nil {
 		return err
@@ -102,7 +136,7 @@ func deleteBlobLocalKeepRef(dbPath string, cid string) error {
 	}
 	defer tx.Rollback()
 
-	if _, err := deleteBlobRefBySourceAndRefKey(tx, blobRefSourceLocalKeep, cid); err != nil {
+	if _, err := deleteBlobRefBySourceAndRefKey(tx, blobRefSourceLocalKeep, oid); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -111,8 +145,8 @@ func deleteBlobLocalKeepRef(dbPath string, cid string) error {
 	return nil
 }
 
-func deleteBlobLocalKeepRefs(dbPath string, cids []string) error {
-	if len(cids) == 0 {
+func deleteBlobLocalKeepRefs(dbPath string, oids []string) error {
+	if len(oids) == 0 {
 		return nil
 	}
 	db, err := openBlobRefsDB(dbPath)
@@ -127,17 +161,17 @@ func deleteBlobLocalKeepRefs(dbPath string, cids []string) error {
 	}
 	defer tx.Rollback()
 
-	seen := make(map[string]struct{}, len(cids))
-	for _, raw := range cids {
-		cid, err := normalizeBlobCIDForRef(raw)
+	seen := make(map[string]struct{}, len(oids))
+	for _, raw := range oids {
+		oid, err := normalizeBlobOIDForRef(raw)
 		if err != nil {
 			continue
 		}
-		if _, exists := seen[cid]; exists {
+		if _, exists := seen[oid]; exists {
 			continue
 		}
-		seen[cid] = struct{}{}
-		if _, err := deleteBlobRefBySourceAndRefKey(tx, blobRefSourceLocalKeep, cid); err != nil {
+		seen[oid] = struct{}{}
+		if _, err := deleteBlobRefBySourceAndRefKey(tx, blobRefSourceLocalKeep, oid); err != nil {
 			return err
 		}
 	}
@@ -160,13 +194,22 @@ func syncBlobGCReferenceSources(dbPath string, syncSnapshot bool, snapshotCIDs m
 	}
 	defer tx.Rollback()
 
+	snapshotOIDs, err := convertBlobCIDSetToOIDs(snapshotCIDs)
+	if err != nil {
+		return err
+	}
+	vectorOIDs, err := convertBlobCIDSetToOIDs(vectorCIDs)
+	if err != nil {
+		return err
+	}
+
 	if syncSnapshot {
-		if err := replaceBlobRefsForSource(tx, blobRefSourceSnapshot, snapshotCIDs); err != nil {
+		if err := replaceBlobRefsForSource(tx, blobRefSourceSnapshot, snapshotOIDs); err != nil {
 			return err
 		}
 	}
 	if syncVector {
-		if err := replaceBlobRefsForSource(tx, blobRefSourceVector, vectorCIDs); err != nil {
+		if err := replaceBlobRefsForSource(tx, blobRefSourceVector, vectorOIDs); err != nil {
 			return err
 		}
 	}
@@ -177,7 +220,7 @@ func syncBlobGCReferenceSources(dbPath string, syncSnapshot bool, snapshotCIDs m
 	return nil
 }
 
-func replaceBlobRefsForSource(tx *sql.Tx, source string, cids map[string]struct{}) error {
+func replaceBlobRefsForSource(tx *sql.Tx, source string, oids map[string]struct{}) error {
 	normalizedSource := strings.TrimSpace(source)
 	if normalizedSource == "" {
 		return fmt.Errorf("replace refs source must not be empty")
@@ -185,24 +228,24 @@ func replaceBlobRefsForSource(tx *sql.Tx, source string, cids map[string]struct{
 	if _, err := tx.Exec(`DELETE FROM blob_refs WHERE source = ?`, normalizedSource); err != nil {
 		return fmt.Errorf("clear refs for source %q: %w", normalizedSource, err)
 	}
-	if len(cids) == 0 {
+	if len(oids) == 0 {
 		return nil
 	}
 	now := time.Now().UTC().UnixNano()
-	sorted := make([]string, 0, len(cids))
-	for cid := range cids {
-		sorted = append(sorted, cid)
+	sorted := make([]string, 0, len(oids))
+	for oid := range oids {
+		sorted = append(sorted, oid)
 	}
 	sort.Strings(sorted)
-	for _, cid := range sorted {
-		if err := upsertBlobRef(tx, normalizedSource, cid, cid, now); err != nil {
+	for _, oid := range sorted {
+		if err := upsertBlobRef(tx, normalizedSource, oid, oid, now); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func upsertBlobRef(tx *sql.Tx, source string, refKey string, cid string, updatedAt int64) error {
+func upsertBlobRef(tx *sql.Tx, source string, refKey string, oid string, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("refs upsert transaction is required")
 	}
@@ -214,9 +257,9 @@ func upsertBlobRef(tx *sql.Tx, source string, refKey string, cid string, updated
 	if normalizedRefKey == "" {
 		return fmt.Errorf("refs ref_key must not be empty")
 	}
-	normalizedCID, err := normalizeBlobCIDForRef(cid)
+	normalizedOID, err := normalizeBlobOIDForRef(oid)
 	if err != nil {
-		return fmt.Errorf("normalize refs cid: %w", err)
+		return fmt.Errorf("normalize refs oid: %w", err)
 	}
 
 	now := updatedAt
@@ -224,18 +267,18 @@ func upsertBlobRef(tx *sql.Tx, source string, refKey string, cid string, updated
 		now = time.Now().UTC().UnixNano()
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO blob_refs(source, ref_key, cid, created_at_ns, updated_at_ns)
+		`INSERT INTO blob_refs(source, ref_key, oid, created_at_ns, updated_at_ns)
 		VALUES(?, ?, ?, ?, ?)
 		ON CONFLICT(source, ref_key) DO UPDATE SET
-			cid = excluded.cid,
+			oid = excluded.oid,
 			updated_at_ns = excluded.updated_at_ns`,
 		normalizedSource,
 		normalizedRefKey,
-		normalizedCID,
+		normalizedOID,
 		now,
 		now,
 	); err != nil {
-		return fmt.Errorf("upsert refs row source=%q ref_key=%q cid=%q: %w", normalizedSource, normalizedRefKey, normalizedCID, err)
+		return fmt.Errorf("upsert refs row source=%q ref_key=%q oid=%q: %w", normalizedSource, normalizedRefKey, normalizedOID, err)
 	}
 	return nil
 }
@@ -263,10 +306,26 @@ func deleteBlobRefBySourceAndRefKey(tx *sql.Tx, source string, refKey string) (i
 	return rows, nil
 }
 
-func normalizeBlobCIDForRef(value string) (string, error) {
+func normalizeBlobOIDForRef(value string) (string, error) {
 	normalized := normalizeDigestHex(strings.TrimSpace(value))
-	if _, err := parseDigestHex32(normalized); err != nil {
+	if err := validateBlobOID(normalized); err != nil {
 		return "", err
 	}
 	return normalized, nil
+}
+
+func convertBlobCIDSetToOIDs(cids map[string]struct{}) (map[string]struct{}, error) {
+	if len(cids) == 0 {
+		return map[string]struct{}{}, nil
+	}
+	oids := make(map[string]struct{}, len(cids))
+	for cid := range cids {
+		cidBytes, err := parseDigestHex32(cid)
+		if err != nil {
+			return nil, fmt.Errorf("parse cid %q for refs oid conversion: %w", cid, err)
+		}
+		oid := deriveBlobOID(cidBytes)
+		oids[oid] = struct{}{}
+	}
+	return oids, nil
 }

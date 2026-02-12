@@ -24,12 +24,12 @@ import (
 
 const (
 	blobEncAlgorithm = "xchacha20poly1305"
-	blobEncVersion   = 1
+	blobEncVersion   = 2
 
 	blobMagic         = "FBLB1"
 	blobDigestHexSize = 64
 	blobDigestBytes   = 32
-	blobHeaderLen     = len(blobMagic) + 1 + 8 + blobDigestBytes
+	blobHeaderLenV2   = len(blobMagic) + 1 + 8
 
 	blobRemoteBackendDefault = defaultS3BackendName
 	blobRemoteBucketDefault  = "default"
@@ -384,7 +384,7 @@ func runBlobPutCommand(args []string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit blob transaction: %w", err)
 	}
-	if err := upsertBlobLocalKeepRef(*refsDBPath, cid); err != nil {
+	if err := upsertBlobLocalKeepRef(*refsDBPath, oid); err != nil {
 		return err
 	}
 
@@ -548,6 +548,9 @@ func runBlobGetCommand(args []string) error {
 		if requestedOID == "" {
 			return fmt.Errorf("cannot fetch from remote without oid")
 		}
+		if requestedCID == "" {
+			return fmt.Errorf("blob get remote fetch requires -cid or existing local cid mapping for -oid")
+		}
 		ctx := context.Background()
 		remoteStore, err := openBlobRemoteStoreFunc(ctx)
 		if err != nil {
@@ -572,7 +575,7 @@ func runBlobGetCommand(args []string) error {
 		if !found {
 			return fmt.Errorf("blob %q not found on remote %s://%s", requestedOID, remoteBackend, remoteBucket)
 		}
-		decodedPkg, decodedPlain, err := decodeAndDecryptBlobData(encoded)
+		decodedPkg, decodedPlain, err := decodeAndDecryptBlobData(encoded, requestedCID)
 		if err != nil {
 			return err
 		}
@@ -691,7 +694,7 @@ func runBlobGetCommand(args []string) error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit blob transaction: %w", err)
 	}
-	if err := upsertBlobLocalKeepRef(*refsDBPath, pkg.CID); err != nil {
+	if err := upsertBlobLocalKeepRef(*refsDBPath, pkg.OID); err != nil {
 		return err
 	}
 
@@ -940,7 +943,7 @@ func runBlobRemoveCommand(args []string) error {
 		return fmt.Errorf("commit blob remove transaction: %w", err)
 	}
 	if *local {
-		if err := deleteBlobLocalKeepRef(*refsDBPath, requestedCID); err != nil {
+		if err := deleteBlobLocalKeepRef(*refsDBPath, requestedOID); err != nil {
 			return err
 		}
 	}
@@ -1106,7 +1109,7 @@ func runBlobGCCommand(args []string) error {
 		}
 		staleLocalKeepRefs := make([]string, 0, len(deletePlanRows))
 		for _, row := range deletePlanRows {
-			staleLocalKeepRefs = append(staleLocalKeepRefs, row.CID)
+			staleLocalKeepRefs = append(staleLocalKeepRefs, row.OID)
 		}
 		if err := deleteBlobLocalKeepRefs(absRefsDBPath, staleLocalKeepRefs); err != nil {
 			return err
@@ -1889,7 +1892,7 @@ func deleteRemoteBlobInventoryObjectKeyDB(db *sql.DB, backend string, bucket str
 
 func encryptBlobData(plain []byte) (blobCipherPackage, error) {
 	cid := blake3.Sum256(plain)
-	header := buildBlobHeader(cid, int64(len(plain)))
+	header := buildBlobHeaderV2(int64(len(plain)))
 	key := deriveBlobMaterial(cid, "enc-key", chacha20poly1305.KeySize)
 	nonce := deriveBlobMaterial(cid, "enc-nonce", chacha20poly1305.NonceSizeX)
 	aead, err := chacha20poly1305.NewX(key)
@@ -1910,8 +1913,12 @@ func encryptBlobData(plain []byte) (blobCipherPackage, error) {
 	}, nil
 }
 
-func decodeAndDecryptBlobData(encoded []byte) (blobCipherPackage, []byte, error) {
-	cid, plainSize, header, err := parseBlobHeader(encoded)
+func decodeAndDecryptBlobData(encoded []byte, expectedCID string) (blobCipherPackage, []byte, error) {
+	headerMeta, err := parseBlobHeader(encoded)
+	if err != nil {
+		return blobCipherPackage{}, nil, err
+	}
+	cid, err := resolveBlobHeaderCID(headerMeta, expectedCID)
 	if err != nil {
 		return blobCipherPackage{}, nil, err
 	}
@@ -1921,12 +1928,12 @@ func decodeAndDecryptBlobData(encoded []byte) (blobCipherPackage, []byte, error)
 	if err != nil {
 		return blobCipherPackage{}, nil, fmt.Errorf("initialize xchacha20poly1305: %w", err)
 	}
-	plaintext, err := aead.Open(nil, nonce, encoded[len(header):], header)
+	plaintext, err := aead.Open(nil, nonce, encoded[len(headerMeta.Header):], headerMeta.Header)
 	if err != nil {
 		return blobCipherPackage{}, nil, fmt.Errorf("decrypt blob payload: %w", err)
 	}
-	if int64(len(plaintext)) != plainSize {
-		return blobCipherPackage{}, nil, fmt.Errorf("decrypted size mismatch: expected %d got %d", plainSize, len(plaintext))
+	if int64(len(plaintext)) != headerMeta.PlainSize {
+		return blobCipherPackage{}, nil, fmt.Errorf("decrypted size mismatch: expected %d got %d", headerMeta.PlainSize, len(plaintext))
 	}
 	cidCheck := blake3.Sum256(plaintext)
 	if !bytes.Equal(cidCheck[:], cid[:]) {
@@ -1936,7 +1943,7 @@ func decodeAndDecryptBlobData(encoded []byte) (blobCipherPackage, []byte, error)
 	pkg := blobCipherPackage{
 		CID:        hex.EncodeToString(cid[:]),
 		OID:        deriveBlobOID(cid),
-		PlainSize:  plainSize,
+		PlainSize:  headerMeta.PlainSize,
 		CipherSize: int64(len(encoded)),
 		CipherHash: blake3Hex(encoded),
 		Encoded:    encoded,
@@ -1945,49 +1952,68 @@ func decodeAndDecryptBlobData(encoded []byte) (blobCipherPackage, []byte, error)
 }
 
 func inspectCipherBlobData(encoded []byte) (blobCipherPackage, error) {
-	cid, plainSize, _, err := parseBlobHeader(encoded)
+	headerMeta, err := parseBlobHeader(encoded)
 	if err != nil {
 		return blobCipherPackage{}, err
 	}
 	return blobCipherPackage{
-		CID:        hex.EncodeToString(cid[:]),
-		OID:        deriveBlobOID(cid),
-		PlainSize:  plainSize,
+		CID:        "",
+		OID:        "",
+		PlainSize:  headerMeta.PlainSize,
 		CipherSize: int64(len(encoded)),
 		CipherHash: blake3Hex(encoded),
 		Encoded:    encoded,
 	}, nil
 }
 
-func buildBlobHeader(cid [blobDigestBytes]byte, plainSize int64) []byte {
-	header := make([]byte, 0, blobHeaderLen)
+type blobHeaderMetadata struct {
+	Version   int
+	PlainSize int64
+	Header    []byte
+}
+
+func buildBlobHeaderV2(plainSize int64) []byte {
+	header := make([]byte, 0, blobHeaderLenV2)
 	header = append(header, []byte(blobMagic)...)
 	header = append(header, byte(blobEncVersion))
 	sizeBuf := make([]byte, 8)
 	binary.BigEndian.PutUint64(sizeBuf, uint64(plainSize))
 	header = append(header, sizeBuf...)
-	header = append(header, cid[:]...)
 	return header
 }
 
-func parseBlobHeader(encoded []byte) ([blobDigestBytes]byte, int64, []byte, error) {
-	cid := [blobDigestBytes]byte{}
-	if len(encoded) < blobHeaderLen {
-		return cid, 0, nil, fmt.Errorf("blob payload too short: got %d bytes", len(encoded))
+func parseBlobHeader(encoded []byte) (blobHeaderMetadata, error) {
+	if len(encoded) < blobHeaderLenV2 {
+		return blobHeaderMetadata{}, fmt.Errorf("blob payload too short: got %d bytes", len(encoded))
 	}
 	if string(encoded[:len(blobMagic)]) != blobMagic {
-		return cid, 0, nil, fmt.Errorf("unsupported blob magic")
+		return blobHeaderMetadata{}, fmt.Errorf("unsupported blob magic")
 	}
-	if int(encoded[len(blobMagic)]) != blobEncVersion {
-		return cid, 0, nil, fmt.Errorf("unsupported blob version %d", encoded[len(blobMagic)])
+	version := int(encoded[len(blobMagic)])
+	if version != blobEncVersion {
+		return blobHeaderMetadata{}, fmt.Errorf("unsupported blob version %d", version)
 	}
 	sizeU64 := binary.BigEndian.Uint64(encoded[len(blobMagic)+1 : len(blobMagic)+1+8])
 	if sizeU64 > uint64(^uint(0)>>1) {
-		return cid, 0, nil, fmt.Errorf("blob plain size too large: %d", sizeU64)
+		return blobHeaderMetadata{}, fmt.Errorf("blob plain size too large: %d", sizeU64)
 	}
-	plainSize := int64(sizeU64)
-	copy(cid[:], encoded[len(blobMagic)+1+8:blobHeaderLen])
-	return cid, plainSize, encoded[:blobHeaderLen], nil
+	return blobHeaderMetadata{
+		Version:   version,
+		PlainSize: int64(sizeU64),
+		Header:    encoded[:blobHeaderLenV2],
+	}, nil
+}
+
+func resolveBlobHeaderCID(meta blobHeaderMetadata, expectedCID string) ([blobDigestBytes]byte, error) {
+	normalizedExpected := normalizeDigestHex(strings.TrimSpace(expectedCID))
+	if normalizedExpected == "" {
+		return [blobDigestBytes]byte{}, fmt.Errorf("encrypted blob payload v%d does not include cid; provide -cid or ensure local cid mapping exists", meta.Version)
+	}
+	cid, err := parseDigestHex32(normalizedExpected)
+	if err != nil {
+		return [blobDigestBytes]byte{}, fmt.Errorf("parse expected cid: %w", err)
+	}
+	return cid, nil
 }
 
 func deriveBlobMaterial(cid [blobDigestBytes]byte, label string, outLen int) []byte {

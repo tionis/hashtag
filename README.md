@@ -352,6 +352,7 @@ Blob flags:
 - `-strict-remote-cache`: fail `blob put` if cached remote-existence cannot be verified (implies verification; no upload fallback)
 - `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
 - `-oid`: encrypted object ID selector for `blob get`/`blob rm`
+  - for header-v2 encrypted payloads, `blob get -oid` requires CID context (`-cid` or existing local `blob_map` mapping)
 - `-out`: output plaintext path for `blob get` (required)
 - `-local`: local cache + `blob_map` deletion toggle for `blob rm` (default `true`)
 - `-limit`: max rows for `blob ls`
@@ -380,13 +381,16 @@ Blob inventory publish flags:
 Blob notes:
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 material derived from plaintext CID.
 - OIDs are deterministic from CID, enabling idempotent dedupe writes across clients.
+- Convergent encryption leaks equality and is vulnerable to dictionary attacks for guessable plaintexts.
 - Local cache stores plaintext by CID for filesystem-level dedupe; remote payloads are encrypted.
 - Remote objects are written under a deterministic key layout derived from global remote config.
+- Encrypted blob payload header no longer stores plaintext CID.
+- Blob payload compatibility is intentionally strict: only current header-v2 payloads are supported.
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - `blob gc` is local-only and does not remove remote objects.
 - node refs use Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.
 - `blob put` and `blob get` upsert local keep refs (`blob.local.keep`) in `refs.db`; local `blob rm` removes them.
-- `blob gc` refreshes derived refs (`snapshot.tree_entries`, `vector.queue`) in `refs.db` and prunes stale local keep refs for deleted CIDs.
+- `blob gc` refreshes derived refs (`snapshot.tree_entries`, `vector.queue`) in `refs.db` and prunes stale local keep refs for deleted OIDs.
 - remote inventory cache flow uses GC generations: workers publish immutable `inventory.db` snapshots and a `gc_info` pointer; clients hydrate `${FORGE_PATH_S3_BLOBS_DB}` per generation and keep local discoveries/uploads in `${FORGE_PATH_S3_BLOBS_OVERLAY_DB}`.
 - out-of-band remote delete guardrails:
   - default verification fallback (`-verify-remote-cache=true`) verifies cached existence and uploads if stale.
@@ -394,7 +398,7 @@ Blob notes:
 - Metadata is stored in separate tables:
   - `blob_map`: known cleartext CID -> encrypted object mapping + cache metadata.
   - `remote_blob_inventory`: observed remote objects (including objects without local cleartext mapping).
-  - `blob_refs`: per-node keep-set references for Litestream replication / global GC workers.
+  - `blob_refs`: per-node keep-set OID references for Litestream replication / global GC workers.
 
 ## Vector Tool
 

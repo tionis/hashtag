@@ -18,8 +18,11 @@
 - Plaintext content identity (`cid`) is `blake3(plaintext)`.
 - Encryption is deterministic/convergent using XChaCha20-Poly1305 with key/nonce material derived from CID.
 - Encrypted object identity (`oid`) is deterministic from CID.
+- Convergent encryption leaks equality and is vulnerable to dictionary attacks for guessable plaintexts.
 - Local blob cache stores plaintext by CID.
 - Remote backend stores encrypted payloads by OID in S3.
+- For header-v2 encrypted payloads, remote decrypt-by-OID requires CID context (`-cid` or local `blob_map` row).
+- Blob payload compatibility is intentionally strict: only current header-v2 payloads are supported.
 - Local `blob put` attempts a CoW reflink clone into cache first, then falls back to a regular copy.
 - Remote access for `put/get/rm` is enabled with `-remote` and uses global config from `forge remote config`.
 - `blob gc` is local-only and prunes unreferenced `blob_map` rows/cache objects from local GC roots.
@@ -39,9 +42,9 @@
   - observed remote objects (`backend`, `bucket`, `object_key`) with OID and cipher metadata
   - decoupled from `blob_map` so remote rescans/cleanup can be handled independently
 - `blob_refs`
-  - per-node keep-set references (`source`, `ref_key`, `cid`) replicated via `refs.db`
+  - per-node keep-set references (`source`, `ref_key`, `oid`) replicated via `refs.db`
   - local keep refs are upserted on `blob put/get` and removed on local `blob rm`
-  - GC-derived snapshot/vector references are refreshed by `blob gc`
+  - GC-derived snapshot/vector references are refreshed by `blob gc` (converted to OID refs)
 
 ## Output Modes
 
@@ -49,12 +52,12 @@
 
 ## Local GC Roots
 
-`forge blob gc` computes live CIDs from local references:
+`forge blob gc` computes live CIDs from local references, then converts them to OIDs for persisted refs:
 
 - Snapshot DB `tree_entries.target_hash` rows where `kind='file'`.
 - Vector queue DB `jobs.file_path` payload refs where status is `pending|processing` (and optionally `error`).
 - During each run, these sources are synced into `refs.db` (`snapshot.tree_entries`, `vector.queue`).
-- On applied deletes, stale local keep refs (`blob.local.keep`) for removed CIDs are pruned.
+- On applied deletes, stale local keep refs (`blob.local.keep`) for removed OIDs are pruned.
 - For weak backends (without `If-None-Match`), remote existence checks use `base UNION overlay` inventory cache.
 
 ## Inventory Publish

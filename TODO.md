@@ -2,16 +2,15 @@
 
 ## P0 CRITICAL: Fix Blob Confidentiality Model (Blocking)
 
-- [ ] Treat current convergent blob mode as confidentiality-broken until fixed.
-- [ ] Remove plaintext CID from encrypted blob payload/header format.
-- [ ] Stop deriving remote decryption material from public/plaintext identifiers alone.
-- [ ] Redesign key derivation so remote blob read access does not imply decrypt access.
-- [ ] Stop exposing plaintext CID in replicated pinsets/refs metadata.
-- [ ] Decide and implement one of:
+- [ ] Document and explicitly accept (or reject) convergent-encryption leakage: equality + dictionary-attack exposure for guessable plaintexts.
+- [x] Remove plaintext CID from encrypted blob payload/header format.
+- [ ] If stronger confidentiality is required, redesign key derivation/material so remote blob-read alone cannot enable plaintext recovery.
+- [x] Stop exposing plaintext CID in replicated pinsets/refs metadata.
+- [x] Decide and implement one of:
   - `refs.db` encrypted replication, or
   - OID-only replicated refs (no plaintext CID exposure), or
   - both.
-- [ ] Add migration tooling for existing encrypted blobs + refs data.
+- [ ] (optional) add one-shot admin tooling to invalidate/reset legacy local metadata where needed.
 - [ ] Add threat-model documentation for the final encryption design.
 - [ ] Mark this as release-blocking for any "encrypted remote blobs" claim.
 

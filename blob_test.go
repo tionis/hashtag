@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tionis/forge/internal/forgeconfig"
@@ -78,6 +79,15 @@ func withTempRefsDBPath(t *testing.T, tempDir string) {
 	t.Setenv(forgeconfig.EnvRefsDBPath, filepath.Join(tempDir, "refs.db"))
 }
 
+func oidForCID(t *testing.T, cid string) string {
+	t.Helper()
+	cidBytes, err := parseDigestHex32(cid)
+	if err != nil {
+		t.Fatalf("parse cid for oid derivation: %v", err)
+	}
+	return deriveBlobOID(cidBytes)
+}
+
 func TestBlobEncryptDecryptDeterministic(t *testing.T) {
 	plain := []byte("forge-blob-deterministic-roundtrip")
 
@@ -103,7 +113,7 @@ func TestBlobEncryptDecryptDeterministic(t *testing.T) {
 		t.Fatal("expected deterministic ciphertext payload to be identical")
 	}
 
-	decodedPkg, decodedPlain, err := decodeAndDecryptBlobData(pkg1.Encoded)
+	decodedPkg, decodedPlain, err := decodeAndDecryptBlobData(pkg1.Encoded, pkg1.CID)
 	if err != nil {
 		t.Fatalf("decode/decrypt blob data: %v", err)
 	}
@@ -293,6 +303,66 @@ func TestBlobPutGetWithRemoteStore(t *testing.T) {
 
 	if _, err := os.Stat(cacheObjectPath); err != nil {
 		t.Fatalf("expected fetched blob to be re-cached at %q: %v", cacheObjectPath, err)
+	}
+}
+
+func TestBlobGetRemoteByOIDRequiresCIDContext(t *testing.T) {
+	temp := t.TempDir()
+	withTempRefsDBPath(t, temp)
+	remoteStore := newFakeBlobRemoteStore("s3", "bucket-a")
+	withFakeBlobRemoteStore(t, remoteStore)
+
+	inputPath := filepath.Join(temp, "input.txt")
+	inputData := []byte("remote-oid-fetch-needs-cid")
+	if err := os.WriteFile(inputPath, inputData, 0o644); err != nil {
+		t.Fatalf("write input file: %v", err)
+	}
+
+	dbPath := filepath.Join(temp, "blob.db")
+	cacheDir := filepath.Join(temp, "cache")
+	if err := runBlobPutCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-remote",
+		"-output", "kv",
+		inputPath,
+	}); err != nil {
+		t.Fatalf("run blob put command with remote: %v", err)
+	}
+
+	cid := blake3Hex(inputData)
+	oid := oidForCID(t, cid)
+	cacheObjectPath, err := blobPlainCachePath(cacheDir, cid)
+	if err != nil {
+		t.Fatalf("resolve cache object path by cid: %v", err)
+	}
+	if err := os.Remove(cacheObjectPath); err != nil {
+		t.Fatalf("remove cached object to force remote fetch: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DELETE FROM blob_map WHERE oid = ?`, oid); err != nil {
+		t.Fatalf("remove local blob map row by oid: %v", err)
+	}
+
+	outPath := filepath.Join(temp, "output.txt")
+	err = runBlobGetCommand([]string{
+		"-db", dbPath,
+		"-cache", cacheDir,
+		"-remote",
+		"-oid", oid,
+		"-out", outPath,
+		"-output", "kv",
+	})
+	if err == nil {
+		t.Fatal("expected oid-only remote fetch without cid context to fail")
+	}
+	if !strings.Contains(err.Error(), "requires -cid or existing local cid mapping") {
+		t.Fatalf("unexpected oid-only remote fetch error: %v", err)
 	}
 }
 
@@ -631,6 +701,7 @@ func TestBlobPutAndGetUpsertLocalKeepRefs(t *testing.T) {
 		t.Fatalf("put blob: %v", err)
 	}
 	cid := blake3Hex(inputData)
+	oid := oidForCID(t, cid)
 
 	refsDB, err := sql.Open("sqlite", refsDBPath)
 	if err != nil {
@@ -638,7 +709,7 @@ func TestBlobPutAndGetUpsertLocalKeepRefs(t *testing.T) {
 	}
 	defer refsDB.Close()
 
-	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceLocalKeep, cid, cid); got != 1 {
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND oid = ?", blobRefSourceLocalKeep, oid, oid); got != 1 {
 		t.Fatalf("expected 1 local keep ref after put, got %d", got)
 	}
 
@@ -647,7 +718,7 @@ func TestBlobPutAndGetUpsertLocalKeepRefs(t *testing.T) {
 		t.Fatalf("get blob: %v", err)
 	}
 
-	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceLocalKeep, cid, cid); got != 1 {
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND oid = ?", blobRefSourceLocalKeep, oid, oid); got != 1 {
 		t.Fatalf("expected local keep ref upsert to remain idempotent, got %d rows", got)
 	}
 }
@@ -669,6 +740,7 @@ func TestBlobRemoveClearsLocalKeepRefs(t *testing.T) {
 		t.Fatalf("put blob: %v", err)
 	}
 	cid := blake3Hex(inputData)
+	oid := oidForCID(t, cid)
 
 	if err := runBlobRemoveCommand([]string{"-db", dbPath, "-cache", cacheDir, "-cid", cid, "-output", "kv"}); err != nil {
 		t.Fatalf("remove blob: %v", err)
@@ -680,7 +752,7 @@ func TestBlobRemoveClearsLocalKeepRefs(t *testing.T) {
 	}
 	defer refsDB.Close()
 
-	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, cid); got != 0 {
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, oid); got != 0 {
 		t.Fatalf("expected local keep ref to be removed, got %d", got)
 	}
 }
@@ -713,6 +785,8 @@ func TestBlobGCSyncsSnapshotVectorRefsAndPrunesStaleLocalKeepRefs(t *testing.T) 
 	}
 	keepCID := blake3Hex(keepData)
 	dropCID := blake3Hex(dropData)
+	keepOID := oidForCID(t, keepCID)
+	dropOID := oidForCID(t, dropCID)
 
 	snapshotDB, err := sql.Open("sqlite", snapshotDBPath)
 	if err != nil {
@@ -763,13 +837,13 @@ INSERT INTO jobs(file_path, status) VALUES (?, 'pending');
 	}
 	defer refsDB.Close()
 
-	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceSnapshot, keepCID, keepCID); got != 1 {
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND oid = ?", blobRefSourceSnapshot, keepOID, keepOID); got != 1 {
 		t.Fatalf("expected snapshot source ref for keep cid, got %d", got)
 	}
-	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND cid = ?", blobRefSourceVector, keepCID, keepCID); got != 1 {
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ? AND oid = ?", blobRefSourceVector, keepOID, keepOID); got != 1 {
 		t.Fatalf("expected vector source ref for keep cid, got %d", got)
 	}
-	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, dropCID); got != 0 {
+	if got := mustCount(t, refsDB, "SELECT COUNT(*) FROM blob_refs WHERE source = ? AND ref_key = ?", blobRefSourceLocalKeep, dropOID); got != 0 {
 		t.Fatalf("expected stale local keep ref for dropped cid to be removed, got %d", got)
 	}
 }

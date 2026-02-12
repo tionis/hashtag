@@ -115,7 +115,7 @@ Inventory cache target:
 
 ### Option A: Published Reference DBs via Litestream (Recommended)
 
-Each node maintains a local SQLite refs DB (`cid` keep-set) and replicates it to object storage with Litestream under a node-scoped location.
+Each node maintains a local SQLite refs DB (`oid` keep-set) and replicates it to object storage with Litestream under a node-scoped location.
 
 Suggested object layout:
 
