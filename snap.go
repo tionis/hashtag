@@ -12,11 +12,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type snapperExecFunc func(args ...string) ([]byte, error)
 
 var runSnapperCommand snapperExecFunc = executeSnapperCommand
+var snapNowFunc = time.Now
 
 type snapContext struct {
 	Path      string
@@ -65,20 +67,29 @@ type snapConfigOutput struct {
 }
 
 type snapLogOutput struct {
-	Config  string               `json:"config"`
-	Path    string               `json:"path"`
-	Count   int                  `json:"count"`
-	Entries []snapLogEntryOutput `json:"entries"`
+	Config      string               `json:"config"`
+	Path        string               `json:"path"`
+	Count       int                  `json:"count"`
+	Since       string               `json:"since,omitempty"`
+	Until       string               `json:"until,omitempty"`
+	SinceUTC    string               `json:"since_utc,omitempty"`
+	UntilUTC    string               `json:"until_utc,omitempty"`
+	ShowFiles   bool                 `json:"show_files"`
+	FilesLimit  int                  `json:"files_limit,omitempty"`
+	Entries     []snapLogEntryOutput `json:"entries"`
+	StatEnabled bool                 `json:"stat_enabled"`
 }
 
 type snapLogEntryOutput struct {
-	Number      int64             `json:"number"`
-	Type        string            `json:"type"`
-	Date        string            `json:"date"`
-	Description string            `json:"description"`
-	StatRange   string            `json:"stat_range,omitempty"`
-	HasStat     bool              `json:"has_stat"`
-	Summary     snapChangeSummary `json:"summary"`
+	Number           int64             `json:"number"`
+	Type             string            `json:"type"`
+	Date             string            `json:"date"`
+	Description      string            `json:"description"`
+	StatRange        string            `json:"stat_range,omitempty"`
+	HasStat          bool              `json:"has_stat"`
+	Summary          snapChangeSummary `json:"summary"`
+	Changes          []snapChange      `json:"changes,omitempty"`
+	ChangesTruncated bool              `json:"changes_truncated,omitempty"`
 }
 
 type snapStatusOutput struct {
@@ -171,6 +182,10 @@ func runSnapLogCommand(args []string) error {
 	configFlag := fs.StringP("config", "c", "", "Explicit snapper config (skip path-based selection)")
 	limit := fs.IntP("limit", "n", 20, "Maximum number of snapshots to show (0 for all)")
 	withStat := fs.Bool("stat", true, "Include change summary against the previous snapshot")
+	sinceExpr := fs.String("since", "", "Lower time bound for snapshots (time expression, e.g. 2026-03-01, -24h, 7d)")
+	untilExpr := fs.String("until", "", "Upper time bound for snapshots (time expression, e.g. 2026-03-02T12:00:00Z)")
+	withFiles := fs.Bool("files", false, "Include changed-file list for each snapshot stat range")
+	filesLimit := fs.Int("files-limit", 50, "Maximum changed files per snapshot when -files is set (0 for all)")
 	noDBus := fs.Bool("no-dbus", false, "Call snapper with --no-dbus")
 	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	applyCommandFlagConventions(fs)
@@ -182,6 +197,12 @@ func runSnapLogCommand(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if *limit < 0 {
+		return fmt.Errorf("-limit must be >= 0")
+	}
+	if *filesLimit < 0 {
+		return fmt.Errorf("-files-limit must be >= 0")
 	}
 
 	resolvedOutputMode, err := resolvePrettyKVJSONOutputMode(*outputMode)
@@ -201,18 +222,43 @@ func runSnapLogCommand(args []string) error {
 	sort.Slice(snapshots, func(i, j int) bool {
 		return snapshots[i].Number < snapshots[j].Number
 	})
-	if *limit > 0 && len(snapshots) > *limit {
-		snapshots = snapshots[len(snapshots)-*limit:]
+	filteredSnapshots, sinceFilter, untilFilter, err := filterSnapshotsByDateExpressions(snapshots, *sinceExpr, *untilExpr, snapNowFunc())
+	if err != nil {
+		return err
+	}
+	if *limit > 0 && len(filteredSnapshots) > *limit {
+		filteredSnapshots = filteredSnapshots[len(filteredSnapshots)-*limit:]
+	}
+
+	includeStat := *withStat || *withFiles
+	pathScopeFilters := deriveSnapLogPathScopeFilters(ctx)
+	prevBySnapshotNumber := make(map[int64]snapperSnapshotEntry, len(snapshots))
+	for i := 1; i < len(snapshots); i++ {
+		prevBySnapshotNumber[snapshots[i].Number] = snapshots[i-1]
 	}
 
 	out := snapLogOutput{
-		Config:  ctx.Config,
-		Path:    ctx.Path,
-		Count:   len(snapshots),
-		Entries: make([]snapLogEntryOutput, 0, len(snapshots)),
+		Config:      ctx.Config,
+		Path:        ctx.Path,
+		Count:       len(filteredSnapshots),
+		Since:       strings.TrimSpace(*sinceExpr),
+		Until:       strings.TrimSpace(*untilExpr),
+		ShowFiles:   *withFiles,
+		Entries:     make([]snapLogEntryOutput, 0, len(filteredSnapshots)),
+		StatEnabled: includeStat,
 	}
+	if *withFiles {
+		out.FilesLimit = *filesLimit
+	}
+	if !sinceFilter.IsZero() {
+		out.SinceUTC = sinceFilter.UTC().Format(time.RFC3339)
+	}
+	if !untilFilter.IsZero() {
+		out.UntilUTC = untilFilter.UTC().Format(time.RFC3339)
+	}
+	rangeChangesCache := make(map[string][]snapChange)
 
-	for i, snapshot := range snapshots {
+	for _, snapshot := range filteredSnapshots {
 		entry := snapLogEntryOutput{
 			Number:      snapshot.Number,
 			Type:        snapshot.Type,
@@ -221,21 +267,244 @@ func runSnapLogCommand(args []string) error {
 			HasStat:     false,
 			Summary:     snapChangeSummary{},
 		}
-		if *withStat && i > 0 {
-			prev := snapshots[i-1]
-			statRange := fmt.Sprintf("%d..%d", prev.Number, snapshot.Number)
-			changes, err := runSnapperStatus(ctx, statRange)
-			if err != nil {
-				return fmt.Errorf("collect stat for %s: %w", statRange, err)
+		if includeStat {
+			prev, ok := prevBySnapshotNumber[snapshot.Number]
+			if ok {
+				statRange := fmt.Sprintf("%d..%d", prev.Number, snapshot.Number)
+				changes, ok := rangeChangesCache[statRange]
+				if !ok {
+					collectedChanges, err := runSnapperStatus(ctx, statRange)
+					if err != nil {
+						return fmt.Errorf("collect stat for %s: %w", statRange, err)
+					}
+					changes = collectedChanges
+					rangeChangesCache[statRange] = collectedChanges
+				}
+				if len(pathScopeFilters) > 0 {
+					changes = filterSnapChangesByPaths(changes, pathScopeFilters)
+				}
+				entry.HasStat = true
+				entry.StatRange = statRange
+				entry.Summary = summarizeSnapChanges(changes)
+				if *withFiles {
+					entry.Changes, entry.ChangesTruncated = trimSnapChanges(changes, *filesLimit)
+				}
 			}
-			entry.HasStat = true
-			entry.StatRange = statRange
-			entry.Summary = summarizeSnapChanges(changes)
 		}
 		out.Entries = append(out.Entries, entry)
 	}
 
 	return renderSnapLogOutput(resolvedOutputMode, out)
+}
+
+func trimSnapChanges(changes []snapChange, max int) ([]snapChange, bool) {
+	if max == 0 || len(changes) <= max {
+		if len(changes) == 0 {
+			return nil, false
+		}
+		copied := make([]snapChange, len(changes))
+		copy(copied, changes)
+		return copied, false
+	}
+	copied := make([]snapChange, max)
+	copy(copied, changes[:max])
+	return copied, true
+}
+
+func deriveSnapLogPathScopeFilters(ctx snapContext) []string {
+	if strings.TrimSpace(ctx.Subvolume) == "" {
+		return nil
+	}
+	if !pathWithinBase(ctx.Subvolume, ctx.Path) {
+		return nil
+	}
+	return normalizeSnapperFileFilters(ctx, []string{ctx.Path})
+}
+
+func filterSnapshotsByDateExpressions(snapshots []snapperSnapshotEntry, sinceExpr string, untilExpr string, now time.Time) ([]snapperSnapshotEntry, time.Time, time.Time, error) {
+	sinceExpr = strings.TrimSpace(sinceExpr)
+	untilExpr = strings.TrimSpace(untilExpr)
+
+	sinceFilter := time.Time{}
+	untilFilter := time.Time{}
+	var err error
+	if sinceExpr != "" {
+		sinceFilter, err = parseSnapTimeExpression(sinceExpr, now)
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("parse -since %q: %w", sinceExpr, err)
+		}
+	}
+	if untilExpr != "" {
+		untilFilter, err = parseSnapTimeExpression(untilExpr, now)
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("parse -until %q: %w", untilExpr, err)
+		}
+	}
+	if !sinceFilter.IsZero() && !untilFilter.IsZero() && sinceFilter.After(untilFilter) {
+		return nil, time.Time{}, time.Time{}, fmt.Errorf("-since must be <= -until")
+	}
+
+	if sinceFilter.IsZero() && untilFilter.IsZero() {
+		out := make([]snapperSnapshotEntry, len(snapshots))
+		copy(out, snapshots)
+		return out, time.Time{}, time.Time{}, nil
+	}
+
+	out := make([]snapperSnapshotEntry, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		snapshotTime, err := parseSnapperSnapshotTime(snapshot.Date, now.Location())
+		if err != nil {
+			return nil, time.Time{}, time.Time{}, fmt.Errorf("parse snapshot %d date %q: %w", snapshot.Number, snapshot.Date, err)
+		}
+		if !sinceFilter.IsZero() && snapshotTime.Before(sinceFilter) {
+			continue
+		}
+		if !untilFilter.IsZero() && snapshotTime.After(untilFilter) {
+			continue
+		}
+		out = append(out, snapshot)
+	}
+	return out, sinceFilter, untilFilter, nil
+}
+
+func parseSnapTimeExpression(raw string, now time.Time) (time.Time, error) {
+	expr := strings.TrimSpace(raw)
+	if expr == "" {
+		return time.Time{}, fmt.Errorf("empty time expression")
+	}
+
+	lower := strings.ToLower(expr)
+	switch lower {
+	case "now":
+		return now, nil
+	case "today":
+		year, month, day := now.Date()
+		return time.Date(year, month, day, 0, 0, 0, 0, now.Location()), nil
+	case "yesterday":
+		year, month, day := now.Date()
+		return time.Date(year, month, day, 0, 0, 0, 0, now.Location()).Add(-24 * time.Hour), nil
+	}
+
+	if epochTime, ok := parseUnixEpochExpression(expr); ok {
+		return epochTime, nil
+	}
+	if absoluteTime, err := parseSnapperSnapshotTime(expr, now.Location()); err == nil {
+		return absoluteTime, nil
+	}
+	if relativeDuration, ok := parseRelativeTimeExpression(expr); ok {
+		return now.Add(-relativeDuration), nil
+	}
+	return time.Time{}, fmt.Errorf("unsupported time expression (use RFC3339, YYYY-MM-DD[ HH:MM:SS], unix epoch, or relative durations like -24h/7d)")
+}
+
+func parseUnixEpochExpression(raw string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	signless := strings.TrimPrefix(trimmed, "+")
+	if strings.HasPrefix(signless, "-") {
+		return time.Time{}, false
+	}
+	if strings.IndexFunc(signless, func(r rune) bool {
+		return r < '0' || r > '9'
+	}) >= 0 {
+		return time.Time{}, false
+	}
+
+	value, err := strconv.ParseInt(signless, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	switch len(signless) {
+	case 10:
+		return time.Unix(value, 0), true
+	case 13:
+		return time.UnixMilli(value), true
+	case 16:
+		return time.UnixMicro(value), true
+	case 19:
+		return time.Unix(0, value), true
+	default:
+		return time.Time{}, false
+	}
+}
+
+func parseRelativeTimeExpression(raw string) (time.Duration, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	if normalized == "" {
+		return 0, false
+	}
+	normalized = strings.TrimSuffix(normalized, " ago")
+	normalized = strings.TrimSpace(strings.TrimPrefix(normalized, "-"))
+	if normalized == "" {
+		return 0, false
+	}
+	if d, err := time.ParseDuration(normalized); err == nil {
+		if d < 0 {
+			d = -d
+		}
+		return d, true
+	}
+
+	unit := normalized[len(normalized)-1]
+	valueText := strings.TrimSpace(normalized[:len(normalized)-1])
+	if valueText == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(valueText, 64)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	switch unit {
+	case 'd':
+		return time.Duration(value * float64(24*time.Hour)), true
+	case 'w':
+		return time.Duration(value * float64(7*24*time.Hour)), true
+	default:
+		return 0, false
+	}
+}
+
+func parseSnapperSnapshotTime(raw string, location *time.Location) (time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, fmt.Errorf("empty date")
+	}
+	layoutsWithZone := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05 -0700",
+		"2006-01-02 15:04:05 -07:00",
+		"2006-01-02 15:04:05 MST",
+		"2006-01-02T15:04:05 -0700",
+		"2006-01-02T15:04:05 -07:00",
+		"2006-01-02T15:04:05 MST",
+	}
+	for _, layout := range layoutsWithZone {
+		parsed, err := time.Parse(layout, trimmed)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+
+	if location == nil {
+		location = time.Local
+	}
+	layoutsWithoutZone := []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04",
+	}
+	for _, layout := range layoutsWithoutZone {
+		parsed, err := time.ParseInLocation(layout, trimmed, location)
+		if err == nil {
+			return parsed, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported timestamp format")
 }
 
 func runSnapStatusCommand(args []string) error {
@@ -252,6 +521,8 @@ func runSnapStatusCommand(args []string) error {
 	configFlag := fs.StringP("config", "c", "", "Explicit snapper config (skip path-based selection)")
 	fromFlag := fs.StringP("from", "f", "latest", "From revision selector (latest|previous|<number>)")
 	toFlag := fs.StringP("to", "t", "0", "To revision selector (latest|previous|current|<number>)")
+	fromTimeFlag := fs.String("from-time", "", "From snapshot time selector (time expression, e.g. 2026-03-01T10:00:00Z, -24h)")
+	toTimeFlag := fs.String("to-time", "", "To snapshot time selector (time expression, e.g. 2026-03-01T12:00:00Z)")
 	noDBus := fs.Bool("no-dbus", false, "Call snapper with --no-dbus")
 	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	applyCommandFlagConventions(fs)
@@ -269,6 +540,12 @@ func runSnapStatusCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(*fromTimeFlag) != "" && fs.Changed("from") {
+		return fmt.Errorf("cannot combine -from with -from-time")
+	}
+	if strings.TrimSpace(*toTimeFlag) != "" && fs.Changed("to") {
+		return fmt.Errorf("cannot combine -to with -to-time")
+	}
 
 	ctx, err := resolveSnapContext(*pathFlag, *configFlag, *noDBus)
 	if err != nil {
@@ -279,7 +556,7 @@ func runSnapStatusCommand(args []string) error {
 		return err
 	}
 
-	from, to, err := resolveSnapRange(*fromFlag, *toFlag, snapshots)
+	from, to, err := resolveSnapRangeWithTimeSelectors(*fromFlag, *toFlag, *fromTimeFlag, *toTimeFlag, snapshots, snapNowFunc())
 	if err != nil {
 		return err
 	}
@@ -316,6 +593,8 @@ func runSnapDiffCommand(args []string) error {
 	configFlag := fs.StringP("config", "c", "", "Explicit snapper config (skip path-based selection)")
 	fromFlag := fs.StringP("from", "f", "latest", "From revision selector (latest|previous|<number>)")
 	toFlag := fs.StringP("to", "t", "0", "To revision selector (latest|previous|current|<number>)")
+	fromTimeFlag := fs.String("from-time", "", "From snapshot time selector (time expression, e.g. 2026-03-01T10:00:00Z, -24h)")
+	toTimeFlag := fs.String("to-time", "", "To snapshot time selector (time expression, e.g. 2026-03-01T12:00:00Z)")
 	noDBus := fs.Bool("no-dbus", false, "Call snapper with --no-dbus")
 	applyCommandFlagConventions(fs)
 	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
@@ -323,6 +602,12 @@ func runSnapDiffCommand(args []string) error {
 			return nil
 		}
 		return err
+	}
+	if strings.TrimSpace(*fromTimeFlag) != "" && fs.Changed("from") {
+		return fmt.Errorf("cannot combine -from with -from-time")
+	}
+	if strings.TrimSpace(*toTimeFlag) != "" && fs.Changed("to") {
+		return fmt.Errorf("cannot combine -to with -to-time")
 	}
 
 	ctx, err := resolveSnapContext(*pathFlag, *configFlag, *noDBus)
@@ -333,7 +618,7 @@ func runSnapDiffCommand(args []string) error {
 	if err != nil {
 		return err
 	}
-	from, to, err := resolveSnapRange(*fromFlag, *toFlag, snapshots)
+	from, to, err := resolveSnapRangeWithTimeSelectors(*fromFlag, *toFlag, *fromTimeFlag, *toTimeFlag, snapshots, snapNowFunc())
 	if err != nil {
 		return err
 	}
@@ -689,6 +974,79 @@ func resolveSnapRange(fromSelector string, toSelector string, snapshots []snappe
 	return from, to, nil
 }
 
+func resolveSnapRangeWithTimeSelectors(fromSelector string, toSelector string, fromTimeSelector string, toTimeSelector string, snapshots []snapperSnapshotEntry, now time.Time) (string, string, error) {
+	fromExpr := strings.TrimSpace(fromTimeSelector)
+	toExpr := strings.TrimSpace(toTimeSelector)
+
+	var (
+		from string
+		to   string
+		err  error
+	)
+	if fromExpr != "" {
+		from, err = resolveSnapSelectorByTime(fromExpr, snapshots, now)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve -from-time selector %q: %w", fromExpr, err)
+		}
+	} else {
+		from, err = resolveSnapSelector(fromSelector, snapshots, true)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve -from selector %q: %w", fromSelector, err)
+		}
+	}
+	if toExpr != "" {
+		to, err = resolveSnapSelectorByTime(toExpr, snapshots, now)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve -to-time selector %q: %w", toExpr, err)
+		}
+	} else {
+		to, err = resolveSnapSelector(toSelector, snapshots, false)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve -to selector %q: %w", toSelector, err)
+		}
+	}
+	return from, to, nil
+}
+
+func resolveSnapSelectorByTime(selector string, snapshots []snapperSnapshotEntry, now time.Time) (string, error) {
+	if len(snapshots) == 0 {
+		return "", fmt.Errorf("no snapshots available")
+	}
+	target, err := parseSnapTimeExpression(selector, now)
+	if err != nil {
+		return "", err
+	}
+
+	var (
+		found      bool
+		bestNumber int64
+		bestTime   time.Time
+	)
+	for _, snapshot := range snapshots {
+		snapshotTime, err := parseSnapperSnapshotTime(snapshot.Date, now.Location())
+		if err != nil {
+			return "", fmt.Errorf("parse snapshot %d date %q: %w", snapshot.Number, snapshot.Date, err)
+		}
+		if snapshotTime.After(target) {
+			continue
+		}
+		if !found || snapshotTime.After(bestTime) || (snapshotTime.Equal(bestTime) && snapshot.Number > bestNumber) {
+			found = true
+			bestNumber = snapshot.Number
+			bestTime = snapshotTime
+		}
+	}
+	if !found {
+		firstSnapshot := snapshots[0]
+		firstTime, parseErr := parseSnapperSnapshotTime(firstSnapshot.Date, now.Location())
+		if parseErr != nil {
+			return "", fmt.Errorf("no snapshot at or before %s", target.Format(time.RFC3339))
+		}
+		return "", fmt.Errorf("no snapshot at or before %s (earliest snapshot: %d at %s)", target.Format(time.RFC3339), firstSnapshot.Number, firstTime.Format(time.RFC3339))
+	}
+	return strconv.FormatInt(bestNumber, 10), nil
+}
+
 func resolveSnapSelector(selector string, snapshots []snapperSnapshotEntry, requireSnapshot bool) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(selector))
 	if normalized == "" {
@@ -1038,8 +1396,15 @@ func renderSnapLogOutput(mode string, output snapLogOutput) error {
 		fmt.Printf("config=%s\n", output.Config)
 		fmt.Printf("path=%s\n", output.Path)
 		fmt.Printf("count=%d\n", output.Count)
+		fmt.Printf("stat_enabled=%t\n", output.StatEnabled)
+		fmt.Printf("show_files=%t\n", output.ShowFiles)
+		fmt.Printf("files_limit=%d\n", output.FilesLimit)
+		fmt.Printf("since=%s\n", output.Since)
+		fmt.Printf("until=%s\n", output.Until)
+		fmt.Printf("since_utc=%s\n", output.SinceUTC)
+		fmt.Printf("until_utc=%s\n", output.UntilUTC)
 		fmt.Println("number\ttype\tdate\tchanges\tadded\tremoved\tmodified\ttype_change\tdescription")
-		for _, entry := range output.Entries {
+		for i, entry := range output.Entries {
 			fmt.Printf(
 				"%d\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%s\n",
 				entry.Number,
@@ -1052,6 +1417,14 @@ func renderSnapLogOutput(mode string, output snapLogOutput) error {
 				entry.Summary.TypeChange,
 				entry.Description,
 			)
+			fmt.Printf("entry.%d.stat_range=%s\n", i, entry.StatRange)
+			fmt.Printf("entry.%d.has_stat=%t\n", i, entry.HasStat)
+			fmt.Printf("entry.%d.changes_truncated=%t\n", i, entry.ChangesTruncated)
+			for changeIdx, change := range entry.Changes {
+				fmt.Printf("entry.%d.change.%d.code=%s\n", i, changeIdx, change.Code)
+				fmt.Printf("entry.%d.change.%d.class=%s\n", i, changeIdx, change.Class)
+				fmt.Printf("entry.%d.change.%d.path=%s\n", i, changeIdx, change.Path)
+			}
 		}
 		return nil
 	case outputModeJSON:
@@ -1062,6 +1435,11 @@ func renderSnapLogOutput(mode string, output snapLogOutput) error {
 			{Label: "Config", Value: output.Config},
 			{Label: "Path", Value: output.Path},
 			{Label: "Entries", Value: strconv.Itoa(output.Count)},
+			{Label: "Stat Enabled", Value: strconv.FormatBool(output.StatEnabled)},
+			{Label: "Show Files", Value: strconv.FormatBool(output.ShowFiles)},
+			{Label: "Files Limit", Value: strconv.Itoa(output.FilesLimit)},
+			{Label: "Since", Value: output.Since},
+			{Label: "Until", Value: output.Until},
 		})
 		printPrettySection("Snapshots")
 		rows := make([][]string, 0, len(output.Entries))
@@ -1083,6 +1461,30 @@ func renderSnapLogOutput(mode string, output snapLogOutput) error {
 			return nil
 		}
 		printPrettyTable([]string{"Nr", "Type", "Date", "Files", "+", "-", "M", "T", "Description"}, rows)
+		if output.ShowFiles {
+			printPrettySection("Changed Files")
+			printed := false
+			for _, entry := range output.Entries {
+				if len(entry.Changes) == 0 {
+					continue
+				}
+				printed = true
+				label := strconv.FormatInt(entry.Number, 10)
+				if strings.TrimSpace(entry.StatRange) != "" {
+					label = fmt.Sprintf("%s (%s)", label, entry.StatRange)
+				}
+				fmt.Println(label)
+				for _, change := range entry.Changes {
+					fmt.Printf("  %s %s\n", change.Code, change.Path)
+				}
+				if entry.ChangesTruncated {
+					fmt.Println("  ... truncated (increase -files-limit to show more)")
+				}
+			}
+			if !printed {
+				fmt.Println("No changed files to display.")
+			}
+		}
 		return nil
 	default:
 		return fmt.Errorf("unsupported output mode %q", mode)

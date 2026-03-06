@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func withMockSnapper(t *testing.T, fn snapperExecFunc) {
@@ -14,6 +15,15 @@ func withMockSnapper(t *testing.T, fn snapperExecFunc) {
 	runSnapperCommand = fn
 	t.Cleanup(func() {
 		runSnapperCommand = orig
+	})
+}
+
+func withFixedSnapNow(t *testing.T, now time.Time) {
+	t.Helper()
+	orig := snapNowFunc
+	snapNowFunc = func() time.Time { return now }
+	t.Cleanup(func() {
+		snapNowFunc = orig
 	})
 }
 
@@ -61,9 +71,9 @@ func TestRunSnapLogCommandJSONIncludesStats(t *testing.T) {
 		case "-c home --jsonout list --disable-used-space --columns number,type,date,description,userdata,cleanup,pre-number":
 			return []byte(`{"snapshots":[{"number":10,"type":"single","date":"2026-03-01 10:00:00","description":"a"},{"number":11,"type":"single","date":"2026-03-01 11:00:00","description":"b"},{"number":12,"type":"single","date":"2026-03-01 12:00:00","description":"c"}]}`), nil
 		case "-c home status 10..11":
-			return []byte("+ file-a\nc file-b\n"), nil
+			return []byte("+ project/file-a\nc project/file-b\n"), nil
 		case "-c home status 11..12":
-			return []byte("- file-c\nt file-d\n"), nil
+			return []byte("- project/file-c\nt project/file-d\n"), nil
 		default:
 			t.Fatalf("unexpected snapper args: %q", call)
 			return nil, nil
@@ -92,6 +102,164 @@ func TestRunSnapLogCommandJSONIncludesStats(t *testing.T) {
 	}
 	if len(calls) != 4 {
 		t.Fatalf("expected 4 snapper calls, got %d (%v)", len(calls), calls)
+	}
+}
+
+func TestRunSnapLogCommandFiltersByTimeExpressions(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "project")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+
+	withFixedSnapNow(t, time.Date(2026, 3, 3, 12, 0, 0, 0, time.Local))
+
+	calls := make([]string, 0)
+	withMockSnapper(t, func(args ...string) ([]byte, error) {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "--jsonout list-configs":
+			return []byte(`{"configs":[{"config":"home","subvolume":"` + root + `"}]}`), nil
+		case "-c home --jsonout list --disable-used-space --columns number,type,date,description,userdata,cleanup,pre-number":
+			return []byte(`{"snapshots":[{"number":10,"type":"single","date":"2026-03-01 10:00:00","description":"a"},{"number":11,"type":"single","date":"2026-03-02 10:00:00","description":"b"},{"number":12,"type":"single","date":"2026-03-03 10:00:00","description":"c"}]}`), nil
+		default:
+			t.Fatalf("unexpected snapper args: %q", call)
+			return nil, nil
+		}
+	})
+
+	stdout, err := captureStdout(t, func() error {
+		return runSnapLogCommand([]string{"-path", target, "-stat=false", "-since", "-36h", "-until", "2026-03-03 10:30:00", "-output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("run snap log filtered: %v", err)
+	}
+
+	var out snapLogOutput
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal snap log output: %v\n%s", err, stdout)
+	}
+	if out.Count != 2 {
+		t.Fatalf("expected 2 entries after time filtering, got %d", out.Count)
+	}
+	if out.Entries[0].Number != 11 || out.Entries[1].Number != 12 {
+		t.Fatalf("unexpected entry numbers after time filtering: %#v", out.Entries)
+	}
+	if out.StatEnabled {
+		t.Fatalf("expected stat_enabled=false when -stat=false and -files=false")
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected only list-configs+list calls, got %d (%v)", len(calls), calls)
+	}
+}
+
+func TestRunSnapLogCommandFilesFlagIncludesPerSnapshotChanges(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "project")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+
+	calls := make([]string, 0)
+	withMockSnapper(t, func(args ...string) ([]byte, error) {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "--jsonout list-configs":
+			return []byte(`{"configs":[{"config":"home","subvolume":"` + root + `"}]}`), nil
+		case "-c home --jsonout list --disable-used-space --columns number,type,date,description,userdata,cleanup,pre-number":
+			return []byte(`{"snapshots":[{"number":10,"type":"single","date":"2026-03-01 10:00:00","description":"a"},{"number":11,"type":"single","date":"2026-03-01 11:00:00","description":"b"},{"number":12,"type":"single","date":"2026-03-01 12:00:00","description":"c"}]}`), nil
+		case "-c home status 11..12":
+			return []byte("+ project/file-a\nc project/file-b\n"), nil
+		default:
+			t.Fatalf("unexpected snapper args: %q", call)
+			return nil, nil
+		}
+	})
+
+	stdout, err := captureStdout(t, func() error {
+		return runSnapLogCommand([]string{"-path", target, "-limit", "1", "-stat=false", "-files", "-files-limit", "1", "-output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("run snap log with files: %v", err)
+	}
+
+	var out snapLogOutput
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal snap log output: %v\n%s", err, stdout)
+	}
+	if !out.ShowFiles {
+		t.Fatalf("expected show_files=true")
+	}
+	if !out.StatEnabled {
+		t.Fatalf("expected stat_enabled=true when -files=true")
+	}
+	if out.Count != 1 {
+		t.Fatalf("expected 1 entry from -limit=1, got %d", out.Count)
+	}
+	entry := out.Entries[0]
+	if entry.Number != 12 {
+		t.Fatalf("expected latest snapshot number 12, got %d", entry.Number)
+	}
+	if !entry.HasStat || entry.StatRange != "11..12" {
+		t.Fatalf("unexpected stat metadata: %#v", entry)
+	}
+	if entry.Summary.Total != 2 {
+		t.Fatalf("expected summary total=2, got %#v", entry.Summary)
+	}
+	if !entry.ChangesTruncated {
+		t.Fatalf("expected changes_truncated=true with -files-limit=1")
+	}
+	if len(entry.Changes) != 1 || entry.Changes[0].Path != "project/file-a" {
+		t.Fatalf("unexpected trimmed changes: %#v", entry.Changes)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("expected list-configs+list+status calls, got %d (%v)", len(calls), calls)
+	}
+}
+
+func TestRunSnapLogCommandScopesStatsToPath(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "project", "sub")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+
+	withMockSnapper(t, func(args ...string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case "--jsonout list-configs":
+			return []byte(`{"configs":[{"config":"home","subvolume":"` + root + `"}]}`), nil
+		case "-c home --jsonout list --disable-used-space --columns number,type,date,description,userdata,cleanup,pre-number":
+			return []byte(`{"snapshots":[{"number":10,"type":"single","date":"2026-03-01 10:00:00","description":"a"},{"number":11,"type":"single","date":"2026-03-01 11:00:00","description":"b"}]}`), nil
+		case "-c home status 10..11":
+			return []byte("+ project/sub/one.txt\nc project/other.txt\n"), nil
+		default:
+			t.Fatalf("unexpected snapper args: %q", strings.Join(args, " "))
+			return nil, nil
+		}
+	})
+
+	stdout, err := captureStdout(t, func() error {
+		return runSnapLogCommand([]string{"-path", target, "-files", "-files-limit", "0", "-output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("run snap log path scoped: %v", err)
+	}
+
+	var out snapLogOutput
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal snap log output: %v\n%s", err, stdout)
+	}
+	if out.Count != 2 {
+		t.Fatalf("expected 2 entries, got %d", out.Count)
+	}
+	entry := out.Entries[1]
+	if entry.Summary.Total != 1 || entry.Summary.Added != 1 {
+		t.Fatalf("expected scoped summary to include only subtree changes, got %#v", entry.Summary)
+	}
+	if len(entry.Changes) != 1 || entry.Changes[0].Path != "project/sub/one.txt" {
+		t.Fatalf("unexpected scoped change list: %#v", entry.Changes)
 	}
 }
 
@@ -224,5 +392,96 @@ func TestRunSnapRestorePreviewFiltersChanges(t *testing.T) {
 	}
 	if len(out.Changes) != 1 || out.Changes[0].Path != "project/sub/new.txt" {
 		t.Fatalf("unexpected preview changes: %#v", out.Changes)
+	}
+}
+
+func TestRunSnapStatusSupportsTimeSelectors(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "project")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	withFixedSnapNow(t, time.Date(2026, 3, 1, 13, 0, 0, 0, time.Local))
+
+	withMockSnapper(t, func(args ...string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case "--jsonout list-configs":
+			return []byte(`{"configs":[{"config":"home","subvolume":"` + root + `"}]}`), nil
+		case "-c home --jsonout list --disable-used-space --columns number,type,date,description,userdata,cleanup,pre-number":
+			return []byte(`{"snapshots":[{"number":10,"type":"single","date":"2026-03-01 10:00:00"},{"number":11,"type":"single","date":"2026-03-01 11:00:00"},{"number":12,"type":"single","date":"2026-03-01 12:00:00"}]}`), nil
+		case "-c home status 10..12":
+			return []byte("+ one\n"), nil
+		default:
+			t.Fatalf("unexpected snapper args: %q", strings.Join(args, " "))
+			return nil, nil
+		}
+	})
+
+	stdout, err := captureStdout(t, func() error {
+		return runSnapStatusCommand([]string{"-path", target, "-from-time", "2026-03-01 10:30:00", "-to-time", "2026-03-01 12:30:00", "-output", "json"})
+	})
+	if err != nil {
+		t.Fatalf("run snap status with time selectors: %v", err)
+	}
+
+	var out snapStatusOutput
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil {
+		t.Fatalf("unmarshal snap status output: %v\n%s", err, stdout)
+	}
+	if out.Range != "10..12" {
+		t.Fatalf("expected range 10..12, got %q", out.Range)
+	}
+}
+
+func TestRunSnapDiffSupportsTimeSelectors(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "project")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	withFixedSnapNow(t, time.Date(2026, 3, 1, 13, 0, 0, 0, time.Local))
+
+	calls := make([]string, 0)
+	withMockSnapper(t, func(args ...string) ([]byte, error) {
+		call := strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "--jsonout list-configs":
+			return []byte(`{"configs":[{"config":"home","subvolume":"` + root + `"}]}`), nil
+		case "-c home --jsonout list --disable-used-space --columns number,type,date,description,userdata,cleanup,pre-number":
+			return []byte(`{"snapshots":[{"number":10,"type":"single","date":"2026-03-01 10:00:00"},{"number":11,"type":"single","date":"2026-03-01 11:00:00"},{"number":12,"type":"single","date":"2026-03-01 12:00:00"}]}`), nil
+		case "-c home diff 11..12 project/sub/file.txt":
+			return []byte("diff-output\n"), nil
+		default:
+			t.Fatalf("unexpected snapper args: %q", call)
+			return nil, nil
+		}
+	})
+
+	stdout, err := captureStdout(t, func() error {
+		return runSnapDiffCommand([]string{"-path", target, "-from-time", "2026-03-01 11:30:00", "-to-time", "2026-03-01 12:30:00", "sub/file.txt"})
+	})
+	if err != nil {
+		t.Fatalf("run snap diff with time selectors: %v", err)
+	}
+	if strings.TrimSpace(stdout) != "diff-output" {
+		t.Fatalf("unexpected diff output: %q", stdout)
+	}
+	if len(calls) != 3 {
+		t.Fatalf("expected list-configs+list+diff calls, got %d (%v)", len(calls), calls)
+	}
+}
+
+func TestRunSnapStatusRejectsMixedRevisionAndTimeSelectors(t *testing.T) {
+	err := runSnapStatusCommand([]string{"-from", "10", "-from-time", "2026-03-01 10:30:00", "-output", "json"})
+	if err == nil {
+		t.Fatal("expected selector conflict error")
+	}
+}
+
+func TestRunSnapDiffRejectsMixedRevisionAndTimeSelectors(t *testing.T) {
+	err := runSnapDiffCommand([]string{"-to", "10", "-to-time", "2026-03-01 10:30:00"})
+	if err == nil {
+		t.Fatal("expected selector conflict error")
 	}
 }

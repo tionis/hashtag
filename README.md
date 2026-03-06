@@ -271,9 +271,23 @@ Common snap flags:
 - `-no-dbus`: pass `--no-dbus` to snapper
 - `-output`: output mode `auto|pretty|kv|json` (`configs`, `log`, `status`, `restore`, `save`)
 
+`snap log` flags:
+- `-limit`: max snapshots to show (`0` for all, default `20`)
+- `-stat`: include per-entry change summary vs previous snapshot (default `true`)
+- `-since`: lower time bound (`RFC3339`, `YYYY-MM-DD[ HH:MM[:SS]]`, unix epoch, `now|today|yesterday`, relative like `-24h`, `7d`, `2w`)
+- `-until`: upper time bound (same formats as `-since`)
+- `-files`: include changed-file list for each entry's stat range
+- `-files-limit`: max changed files per entry when `-files` is enabled (`0` for all, default `50`)
+- `-path`: also scopes `snap log` change stats/file lists to that subtree (within selected subvolume)
+
 Revision selector flags (`status`/`diff`/`restore`):
 - `-from`: `latest|previous|<number>` (default `latest`)
 - `-to`: `current|0|latest|previous|<number>` (default `0`)
+
+Time selector flags (`status`/`diff`):
+- `-from-time`: select `-from` snapshot by time expression (nearest snapshot at/before time)
+- `-to-time`: select `-to` snapshot by time expression (nearest snapshot at/before time)
+- `-from-time` conflicts with `-from`; `-to-time` conflicts with `-to`
 
 Restore behavior:
 - Default is preview mode (`-apply=false`) showing what would be reverted.
