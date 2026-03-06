@@ -352,7 +352,7 @@ Blob flags:
 - `-strict-remote-cache`: fail `blob put` if cached remote-existence cannot be verified (implies verification; no upload fallback)
 - `-cid`: cleartext BLAKE3 content hash selector for `blob get`/`blob rm`
 - `-oid`: encrypted object ID selector for `blob get`/`blob rm`
-  - for header-v2 encrypted payloads, `blob get -oid` requires CID context (`-cid` or existing local `blob_map` mapping)
+  - for header-v1 encrypted payloads, `blob get -oid` requires CID context (`-cid` or existing local `blob_map` mapping)
 - `-out`: output plaintext path for `blob get` (required)
 - `-local`: local cache + `blob_map` deletion toggle for `blob rm` (default `true`)
 - `-limit`: max rows for `blob ls`
@@ -385,7 +385,7 @@ Blob notes:
 - Local cache stores plaintext by CID for filesystem-level dedupe; remote payloads are encrypted.
 - Remote objects are written under a deterministic key layout derived from global remote config.
 - Encrypted blob payload header no longer stores plaintext CID.
-- Blob payload compatibility is intentionally strict: only current header-v2 payloads are supported.
+- Blob payload compatibility is intentionally strict: only current header-v1 payloads are supported.
 - Local `blob put` tries CoW reflink clone into cache first (when supported), then falls back to regular copy with hash verification.
 - `blob gc` is local-only and does not remove remote objects.
 - node refs use Litestream-replicated per-node SQLite refs DBs for scalable large pinsets.

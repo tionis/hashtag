@@ -24,7 +24,7 @@ import (
 
 const (
 	blobEncAlgorithm = "xchacha20poly1305"
-	blobEncVersion   = 2
+	blobEncVersion   = 1
 
 	blobMagic         = "FBLB1"
 	blobDigestHexSize = 64

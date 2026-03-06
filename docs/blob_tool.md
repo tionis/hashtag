@@ -21,8 +21,8 @@
 - Convergent encryption leaks equality and is vulnerable to dictionary attacks for guessable plaintexts.
 - Local blob cache stores plaintext by CID.
 - Remote backend stores encrypted payloads by OID in S3.
-- For header-v2 encrypted payloads, remote decrypt-by-OID requires CID context (`-cid` or local `blob_map` row).
-- Blob payload compatibility is intentionally strict: only current header-v2 payloads are supported.
+- For header-v1 encrypted payloads, remote decrypt-by-OID requires CID context (`-cid` or local `blob_map` row).
+- Blob payload compatibility is intentionally strict: only current header-v1 payloads are supported.
 - Local `blob put` attempts a CoW reflink clone into cache first, then falls back to a regular copy.
 - Remote access for `put/get/rm` is enabled with `-remote` and uses global config from `forge remote config`.
 - `blob gc` is local-only and prunes unreferenced `blob_map` rows/cache objects from local GC roots.
