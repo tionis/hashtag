@@ -43,3 +43,19 @@ Repository-specific instructions for coding agents working on Forge.
 - Forge ships built-in skills in the binary for exposed feature areas.
 - Use `forge skills list` to discover bundled skills.
 - Use `forge skills install -dir <path>` to materialize them to a runtime skill directory.
+
+## Skill Maintenance Rules
+
+1. Add skills for new exposed features.
+- If a change introduces a new top-level command, subcommand family, or materially new workflow, add or extend the corresponding embedded skill under `embedded_skills/<name>/SKILL.md`.
+
+2. Keep skills aligned with behavior changes.
+- If flags, defaults, output contract, safety semantics, or operational caveats change, update affected skill files in the same change.
+
+3. Treat skills as part of the CLI contract.
+- Skill docs are user/agent-facing operational guidance and must stay accurate.
+- Do not merge behavior changes that make related skill content stale.
+
+4. Verify coverage in PR scope.
+- For CLI-affecting work, explicitly check whether one or more skills need updates.
+- Include skill updates in the same commit series as the behavior/documentation change when relevant.
