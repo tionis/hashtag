@@ -2,6 +2,7 @@ package main
 
 import (
 	stderrors "errors"
+	"path/filepath"
 	"testing"
 )
 
@@ -177,5 +178,21 @@ func TestResolveCLIExitCode(t *testing.T) {
 	partial := newCLIExitError(exitCodePartialWarnings, stderrors.New("partial"))
 	if got := resolveCLIExitCode(partial); got != exitCodePartialWarnings {
 		t.Fatalf("expected partial warning error to resolve exit code %d, got %d", exitCodePartialWarnings, got)
+	}
+}
+
+func TestExecuteCLISnapshotHistorySupportsCobraShorthandFlags(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	root := t.TempDir()
+	if err := executeCLI([]string{"snapshot", "history", "-d", dbPath, "-n", "1", "-o", "kv", root}); err != nil {
+		t.Fatalf("executeCLI snapshot history with shorthand flags: %v", err)
+	}
+}
+
+func TestExecuteCLISnapshotHistorySupportsLegacySingleDashLongFlags(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	root := t.TempDir()
+	if err := executeCLI([]string{"snapshot", "history", "-db", dbPath, "-limit", "1", "-output", "kv", root}); err != nil {
+		t.Fatalf("executeCLI snapshot history with legacy single-dash long flags: %v", err)
 	}
 }
