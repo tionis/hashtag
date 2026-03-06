@@ -9,6 +9,7 @@ Current tools:
 - `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
 - `forge hashmap`: map external digests back to BLAKE3 identities.
 - `forge tags`: manage `user.xdg.tags` metadata on files/paths.
+- `forge skills`: list/install embedded skills for agent runtimes.
 - `forge remote`: global S3 backend configuration shared across Forge features.
 - `forge blob`: deterministic encrypted blob storage with plaintext local cache + optional S3 remote sync.
 - `forge vector`: embedding coordinator service and ingestion client workflows.
@@ -33,6 +34,7 @@ Top-level commands:
 - `forge hashmap`
 - `forge tags`
 - `forge config`
+- `forge skills`
 - `forge remote`
 - `forge blob`
 - `forge vector`
@@ -57,10 +59,29 @@ Fine-grained path overrides:
 - `FORGE_PATH_BLOB_DB` (default `${FORGE_DATA_DIR}/blob.db`)
 - `FORGE_PATH_BLOB_CACHE` (default `${FORGE_CACHE_DIR}/blobs`)
 - `FORGE_PATH_REMOTE_DB` (default `${FORGE_DATA_DIR}/remote.db`)
+- `FORGE_PATH_SKILLS_DIR` (default `${FORGE_DATA_DIR}/skills`)
 - `FORGE_PATH_VECTOR_EMBED_DB` (default `${FORGE_DATA_DIR}/vector/embeddings.db`)
 - `FORGE_PATH_VECTOR_QUEUE_DB` (default `${FORGE_DATA_DIR}/vector/queue.db`)
 - `FORGE_PATH_VECTOR_TEMP_DIR` (default `${FORGE_CACHE_DIR}/vector/tmp`)
 - `FORGE_PATH_VECTOR_HYDRATED_DB` (default `${FORGE_DATA_DIR}/embeddings.db`)
+
+## Skills Tool
+
+Forge ships built-in skill definitions for its exposed features and can write
+them to disk for agent runtimes.
+
+```bash
+forge skills list -output json
+forge skills install -dir ~/.codex/skills
+forge skills install -skills forge-hash,forge-snapshot -dry-run -output json
+```
+
+Flags:
+- `-dir`: destination directory for installed skills.
+- `-skills`: optional comma-separated skill subset.
+- `-force`: overwrite existing installed skill directories.
+- `-dry-run`: preview installs without writing files.
+- `-output`: output mode `auto|pretty|kv|json`.
 
 ## Hash Tool
 

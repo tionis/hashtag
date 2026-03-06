@@ -159,6 +159,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newTagsCommand())
 	root.AddCommand(newConfigCommand())
+	root.AddCommand(newSkillsCommand())
 	root.AddCommand(newRemoteCommand())
 	root.AddCommand(newBlobCommand())
 	root.AddCommand(newVectorCommand())
@@ -713,6 +714,39 @@ func newConfigCommand() *cobra.Command {
 	configCmd.AddCommand(show)
 
 	return configCmd
+}
+
+func newSkillsCommand() *cobra.Command {
+	skillsCmd := &cobra.Command{
+		Use:   "skills",
+		Short: "List and install embedded Forge skill definitions for agent tooling.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	list := &cobra.Command{
+		Use:   "list [options]",
+		Short: "List embedded skills shipped in the Forge binary.",
+		RunE:  runLegacyCommandWithCobra(runSkillsListCommand),
+	}
+	list.Flags().StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	skillsCmd.AddCommand(list)
+
+	install := &cobra.Command{
+		Use:   "install [options]",
+		Short: "Install embedded skills to a local directory.",
+		RunE:  runLegacyCommandWithCobra(runSkillsInstallCommand),
+	}
+	installFlags := install.Flags()
+	installFlags.StringP("dir", "d", forgeconfig.SkillsDir(), "Destination directory for installed skills")
+	installFlags.StringP("skills", "s", "", "Comma-separated skill names to install (default: all embedded skills)")
+	installFlags.BoolP("force", "f", false, "Overwrite already-installed skills")
+	installFlags.Bool("dry-run", false, "Preview installation without writing files")
+	installFlags.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	skillsCmd.AddCommand(install)
+
+	return skillsCmd
 }
 
 func newVectorCommand() *cobra.Command {

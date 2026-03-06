@@ -38,3 +38,8 @@ Repository-specific instructions for coding agents working on Forge.
 
 - See `docs/ai_cli_design.md` for the distilled approach and rollout guidance.
 
+## Embedded Skills
+
+- Forge ships built-in skills in the binary for exposed feature areas.
+- Use `forge skills list` to discover bundled skills.
+- Use `forge skills install -dir <path>` to materialize them to a runtime skill directory.

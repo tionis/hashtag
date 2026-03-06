@@ -17,6 +17,7 @@ const (
 	EnvRefsDBPath           = "FORGE_PATH_REFS_DB"
 	EnvS3BlobsDBPath        = "FORGE_PATH_S3_BLOBS_DB"
 	EnvS3BlobsOverlayDBPath = "FORGE_PATH_S3_BLOBS_OVERLAY_DB"
+	EnvSkillsDir            = "FORGE_PATH_SKILLS_DIR"
 	EnvVectorEmbedDBPath    = "FORGE_PATH_VECTOR_EMBED_DB"
 	EnvVectorQueueDBPath    = "FORGE_PATH_VECTOR_QUEUE_DB"
 	EnvVectorTempDir        = "FORGE_PATH_VECTOR_TEMP_DIR"
@@ -96,6 +97,13 @@ func S3BlobsOverlayDBPath() string {
 		return custom
 	}
 	return filepath.Join(DataDir(), "s3-blobs-overlay.db")
+}
+
+func SkillsDir() string {
+	if custom := strings.TrimSpace(os.Getenv(EnvSkillsDir)); custom != "" {
+		return custom
+	}
+	return filepath.Join(DataDir(), "skills")
 }
 
 func VectorEmbedDBPath() string {
