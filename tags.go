@@ -1,8 +1,8 @@
 package main
 
 import (
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,8 +32,9 @@ func runTagsGetCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -73,9 +74,10 @@ func runTagsSetCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	tagsFlag := fs.String("tags", "", "Comma/semicolon-separated tag list (required)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	tagsFlag := fs.StringP("tags", "t", "", "Comma/semicolon-separated tag list (required)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -131,9 +133,10 @@ func runTagsAddCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	tagsFlag := fs.String("tags", "", "Comma/semicolon-separated tag list to add (required)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	tagsFlag := fs.StringP("tags", "t", "", "Comma/semicolon-separated tag list to add (required)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -188,9 +191,10 @@ func runTagsRemoveCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	tagsFlag := fs.String("tags", "", "Comma/semicolon-separated tag list to remove (required)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	tagsFlag := fs.StringP("tags", "t", "", "Comma/semicolon-separated tag list to remove (required)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -245,8 +249,9 @@ func runTagsClearCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

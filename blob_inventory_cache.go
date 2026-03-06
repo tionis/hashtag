@@ -5,8 +5,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"io"
 	"os"
 	"path/filepath"
@@ -963,8 +963,9 @@ func runBlobInventoryPublishCommand(args []string) error {
 	generation := fs.String("generation", defaultGeneration, "Opaque GC generation ID")
 	workerID := fs.String("worker-id", strings.TrimSpace(defaultWorkerID), "GC worker identifier")
 	deletedCount := fs.Int64("deleted-count", 0, "Number of remote blobs deleted in this GC cycle")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

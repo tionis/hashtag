@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"log"
 	"net/url"
 	"os"
@@ -38,7 +38,8 @@ func runVectorServeCommand(args []string) error {
 		fmt.Fprintf(fs.Output(), "  %s, %s\n", forgeconfig.EnvBlobDBPath, forgeconfig.EnvBlobCacheDir)
 		fmt.Fprintln(fs.Output(), "\nVector serve uses remote replication by default and requires remote backend config.")
 	}
-	if err := fs.Parse(args); err != nil {
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -150,8 +151,9 @@ func runVectorLeaseStatusCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 	resource := fs.String("resource", "", "Override lease resource key")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

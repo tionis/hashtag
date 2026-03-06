@@ -7,8 +7,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	stderrors "errors"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"log"
 	"os"
 	"path/filepath"
@@ -159,15 +159,16 @@ func runBlobPutCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
 	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	remoteUpload := fs.Bool("remote", false, "Upload encrypted blob payload to configured remote S3")
 	verifyRemoteCache := fs.Bool("verify-remote-cache", true, "Verify cached remote-existence hits before skipping upload")
 	strictRemoteCache := fs.Bool("strict-remote-cache", false, "Fail when cached remote-existence hits cannot be verified (no fallback upload)")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	verbose := fs.Bool("v", false, "Verbose output")
-	if err := fs.Parse(args); err != nil {
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -420,16 +421,17 @@ func runBlobGetCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
 	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	remoteFetch := fs.Bool("remote", false, "Fetch encrypted blob from configured remote S3 when local cache misses")
 	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
 	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
-	outPath := fs.String("out", "", "Output plaintext file path")
+	outPath := fs.StringP("out", "o", "", "Output plaintext file path")
 	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	verbose := fs.Bool("v", false, "Verbose output")
-	if err := fs.Parse(args); err != nil {
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -725,10 +727,11 @@ func runBlobListCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
-	limit := fs.Int("limit", 20, "Maximum number of rows to list")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to blob metadata database")
+	limit := fs.IntP("limit", "n", 20, "Maximum number of rows to list")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -792,16 +795,17 @@ func runBlobRemoveCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
 	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	cidFlag := fs.String("cid", "", "Cleartext BLAKE3 content hash (hex)")
 	oidFlag := fs.String("oid", "", "Encrypted blob object ID (hex)")
 	local := fs.Bool("local", true, "Delete local cached plaintext and local blob mapping metadata")
 	remote := fs.Bool("remote", false, "Delete encrypted blob from remote backend and clear matching remote inventory rows")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	verbose := fs.Bool("v", false, "Verbose output")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -988,7 +992,7 @@ func runBlobGCCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to blob metadata database")
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to blob metadata database")
 	cacheDir := fs.String("cache", defaultCache, "Path to local blob cache directory")
 	refsDBPath := fs.String("refs-db", defaultRefsDB, "Path to refs database for local keep-set tracking")
 	snapshotDBPath := fs.String("snapshot-db", defaultSnapshot, "Path to snapshot database for tree-entry references")
@@ -996,10 +1000,11 @@ func runBlobGCCommand(args []string) error {
 	noSnapshotRefs := fs.Bool("no-snapshot-refs", false, "Disable snapshot tree-entry references as GC roots")
 	noVectorRefs := fs.Bool("no-vector-refs", false, "Disable vector queue references as GC roots")
 	includeErrorJobs := fs.Bool("include-error-jobs", true, "Treat vector queue status=error jobs as GC roots")
-	apply := fs.Bool("apply", false, "Apply deletions (default is dry-run)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	verbose := fs.Bool("v", false, "Verbose output")
-	if err := fs.Parse(args); err != nil {
+	apply := fs.BoolP("apply", "a", false, "Apply deletions (default is dry-run)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

@@ -3,8 +3,8 @@ package main
 import (
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"io"
 	"log"
 	"os"
@@ -97,9 +97,10 @@ func runDupesCommand(args []string) error {
 	minSize := fs.Int64("min-size", 1, "Only consider files with size >= min-size bytes")
 	useCache := fs.Bool("cache", true, "Use checksum xattr cache when available")
 	updateCache := fs.Bool("update-cache", false, "Update checksum xattrs for newly hashed files")
-	outputMode := fs.String("output", dupesOutputAuto, "Output mode: auto|pretty|table|json|paths|paths0")
-	verbose := fs.Bool("v", false, "Verbose output")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", dupesOutputAuto, "Output mode: auto|pretty|table|json|paths|paths0")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

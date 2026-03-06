@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	stderrors "errors"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"log"
 	"net/url"
 	"os"
@@ -75,7 +75,8 @@ func runReplicateDaemonCommand(args []string) error {
 	nodeSSHKey := fs.String("node-ssh-key", defaultNodeSSHKey, "Path to node SSH private key used to decrypt encrypted replica data")
 	nodeSSHKeyPassphrase := fs.String("node-ssh-key-passphrase", defaultNodeSSHKeyPassphrase, "Passphrase for encrypted -node-ssh-key")
 
-	if err := fs.Parse(args); err != nil {
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

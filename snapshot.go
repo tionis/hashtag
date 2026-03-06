@@ -7,8 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	stderrors "errors"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"hash"
 	"io"
 	"log"
@@ -350,12 +350,13 @@ func runSnapshotCreateCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	verbose := fs.Bool("v", false, "Verbose output")
-	strict := fs.Bool("strict", false, "Fail immediately on scan warnings (permission or transient path errors)")
-	basicTree := fs.Bool("basic-tree", false, "Store tree entries without mode/modtime metadata (mode=0, mod_time_ns=0)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	strict := fs.BoolP("strict", "s", false, "Fail immediately on scan warnings (permission or transient path errors)")
+	basicTree := fs.BoolP("basic-tree", "b", false, "Store tree entries without mode/modtime metadata (mode=0, mod_time_ns=0)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -473,12 +474,13 @@ func runSnapshotRemoteCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	verbose := fs.Bool("v", false, "Verbose output")
-	strict := fs.Bool("strict", false, "Fail immediately on recoverable remote listing/hash/metadata warnings")
-	basicTree := fs.Bool("basic-tree", false, "Store tree entries without mode/modtime metadata (mode=0, mod_time_ns=0)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	strict := fs.BoolP("strict", "s", false, "Fail immediately on recoverable remote listing/hash/metadata warnings")
+	basicTree := fs.BoolP("basic-tree", "b", false, "Store tree entries without mode/modtime metadata (mode=0, mod_time_ns=0)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -609,10 +611,11 @@ func runSnapshotHistoryCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	limit := fs.Int("limit", 20, "Maximum number of history entries to return")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	limit := fs.IntP("limit", "n", 20, "Maximum number of history entries to return")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -684,11 +687,12 @@ func runSnapshotDiffCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	fromTime := fs.Int64("from", 0, "Older snapshot time (unix nanoseconds)")
-	toTime := fs.Int64("to", 0, "Newer snapshot time (unix nanoseconds)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	fromTime := fs.Int64P("from", "f", 0, "Older snapshot time (unix nanoseconds)")
+	toTime := fs.Int64P("to", "t", 0, "Newer snapshot time (unix nanoseconds)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"os"
 	"strconv"
 	"strings"
@@ -59,8 +59,9 @@ func runRemoteConfigSetCommand(args []string) error {
 	signingKeyPassphrase := fs.String("signing-key-passphrase", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyPassphraseEnv)), "Passphrase for encrypted OpenSSH private key used by -signing-key")
 	documentVersion := fs.Int64("doc-version", 0, "Signed document version (default: auto)")
 	documentExpiresSeconds := fs.Int("doc-expires-seconds", remoteDocExpiresPreserve, "Signed document expiry in seconds (-1 preserve existing, 0 disable)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -176,8 +177,9 @@ func runRemoteConfigNodeListCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -223,16 +225,17 @@ func runRemoteConfigNodeAddCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	name := fs.String("name", "", "Node name")
-	publicKey := fs.String("public-key", "", "Node OpenSSH public key")
-	roles := fs.String("roles", "", "Comma-separated trust roles")
+	name := fs.StringP("name", "n", "", "Node name")
+	publicKey := fs.StringP("public-key", "k", "", "Node OpenSSH public key")
+	roles := fs.StringP("roles", "r", "", "Comma-separated trust roles")
 	revoked := fs.Bool("revoked", false, "Set revoked state on add")
 	signingKeyPath := fs.String("signing-key", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyEnv)), "Path to OpenSSH private key used to sign updated config")
 	signingKeyPassphrase := fs.String("signing-key-passphrase", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyPassphraseEnv)), "Passphrase for encrypted OpenSSH private key used by -signing-key")
 	documentVersion := fs.Int64("doc-version", 0, "Signed document version (default: auto)")
 	documentExpiresSeconds := fs.Int("doc-expires-seconds", remoteDocExpiresPreserve, "Signed document expiry in seconds (-1 preserve existing, 0 disable)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -308,17 +311,18 @@ func runRemoteConfigNodeUpdateCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	name := fs.String("name", "", "Node name")
-	publicKey := fs.String("public-key", "", "Replacement OpenSSH public key")
-	roles := fs.String("roles", "", "Replacement comma-separated trust roles")
+	name := fs.StringP("name", "n", "", "Node name")
+	publicKey := fs.StringP("public-key", "k", "", "Replacement OpenSSH public key")
+	roles := fs.StringP("roles", "r", "", "Replacement comma-separated trust roles")
 	clearRoles := fs.Bool("clear-roles", false, "Clear node roles")
 	revoked := fs.String("revoked", "", "Set revoked state (true|false)")
 	signingKeyPath := fs.String("signing-key", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyEnv)), "Path to OpenSSH private key used to sign updated config")
 	signingKeyPassphrase := fs.String("signing-key-passphrase", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyPassphraseEnv)), "Passphrase for encrypted OpenSSH private key used by -signing-key")
 	documentVersion := fs.Int64("doc-version", 0, "Signed document version (default: auto)")
 	documentExpiresSeconds := fs.Int("doc-expires-seconds", remoteDocExpiresPreserve, "Signed document expiry in seconds (-1 preserve existing, 0 disable)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -409,13 +413,14 @@ func runRemoteConfigNodeRemoveCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	name := fs.String("name", "", "Node name")
+	name := fs.StringP("name", "n", "", "Node name")
 	signingKeyPath := fs.String("signing-key", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyEnv)), "Path to OpenSSH private key used to sign updated config")
 	signingKeyPassphrase := fs.String("signing-key-passphrase", strings.TrimSpace(os.Getenv(forgeTrustSigningKeyPassphraseEnv)), "Passphrase for encrypted OpenSSH private key used by -signing-key")
 	documentVersion := fs.Int64("doc-version", 0, "Signed document version (default: auto)")
 	documentExpiresSeconds := fs.Int("doc-expires-seconds", remoteDocExpiresPreserve, "Signed document expiry in seconds (-1 preserve existing, 0 disable)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

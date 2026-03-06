@@ -2,8 +2,8 @@ package main
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"log"
 	"os"
 	"path/filepath"
@@ -182,10 +182,11 @@ func runHashmapIngestCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	verbose := fs.Bool("v", false, "Verbose output")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -380,11 +381,12 @@ func runHashmapLookupCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	algo := fs.String("algo", "", "Hash algorithm to search (required)")
-	digest := fs.String("digest", "", "Digest to search (required)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	algo := fs.StringP("algo", "a", "", "Hash algorithm to search (required)")
+	digest := fs.StringP("digest", "g", "", "Digest to search (required)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -471,10 +473,11 @@ func runHashmapShowCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	blake3Digest := fs.String("blake3", "", "BLAKE3 digest to inspect (required)")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	blake3Digest := fs.StringP("blake3", "b", "", "BLAKE3 digest to inspect (required)")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

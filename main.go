@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"hash"
 	"hash/adler32"
 	"hash/crc32"
@@ -157,13 +157,14 @@ func runHashCommand(args []string) error {
 		fs.PrintDefaults()
 		fmt.Fprintf(fs.Output(), "\nSupported Hash Algorithms:\n  %s\n", strings.Join(getSortedAlgoNames(), ", "))
 	}
-	workers := fs.Int("w", runtime.NumCPU(), "Number of parallel workers")
-	verbose := fs.Bool("v", false, "Verbose output")
+	workers := fs.IntP("workers", "w", runtime.NumCPU(), "Number of parallel workers")
+	verbose := fs.BoolP("verbose", "v", false, "Verbose output")
 	algosFlag := fs.String("algos", "blake3", "Comma-separated list of hash algorithms to use")
 	clean := fs.Bool("clean", false, "Force invalidation of existing caches (re-hash everything)")
 	remove := fs.Bool("remove", false, "Remove all checksum attributes from files instead of hashing")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

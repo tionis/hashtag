@@ -2,8 +2,8 @@ package main
 
 import (
 	"database/sql"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"os"
 	"path/filepath"
 	"sort"
@@ -169,11 +169,12 @@ func runSnapshotInspectCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	treeHash := fs.String("tree", "", "Tree hash to inspect (required)")
-	recursive := fs.Bool("recursive", false, "Recursively inspect descendant tree entries")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	treeHash := fs.StringP("tree", "T", "", "Tree hash to inspect (required)")
+	recursive := fs.BoolP("recursive", "r", false, "Recursively inspect descendant tree entries")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -279,12 +280,13 @@ func runSnapshotQueryCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	dbPath := fs.String("db", defaultDB, "Path to snapshot database")
-	treeHash := fs.String("tree", "", "Tree hash to query (required)")
-	tagsFlag := fs.String("tags", "", "Comma-separated list of required tags (required)")
-	kindFilter := fs.String("kind", snapshotKindFile, "Entry kind filter: file|symlink|tree|all")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	dbPath := fs.StringP("db", "d", defaultDB, "Path to snapshot database")
+	treeHash := fs.StringP("tree", "T", "", "Tree hash to query (required)")
+	tagsFlag := fs.StringP("tags", "t", "", "Comma-separated list of required tags (required)")
+	kindFilter := fs.StringP("kind", "k", snapshotKindFile, "Entry kind filter: file|symlink|tree|all")
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

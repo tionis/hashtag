@@ -13,6 +13,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.9.1
+	github.com/spf13/pflag v1.0.6
 	github.com/superfly/ltx v0.5.1
 	github.com/zeebo/blake3 v0.2.4
 	golang.org/x/crypto v0.47.0
@@ -57,7 +58,6 @@ require (
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/psanford/sqlite3vfs v0.0.0-20251127171934-4e34e03a991a // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/tetratelabs/wazero v1.2.1 // indirect
 	github.com/wasilibs/go-re2 v1.3.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect

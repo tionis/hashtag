@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	stderrors "errors"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"os"
 	"strconv"
 	"strings"
@@ -139,8 +139,9 @@ func runRemoteConfigInitCommand(args []string) error {
 	documentExpiresSeconds := fs.Int("doc-expires-seconds", defaultRemoteDocExpiresSeconds, "Optional signed document expiry in seconds (0 means no expiry)")
 	trustNodesFile := fs.String("trust-nodes-file", "", "Optional path to trust nodes JSON file (array or object with \"nodes\")")
 	rootNodeName := fs.String("root-node-name", defaultRemoteRootNodeName, "Node name for signing root key in trust map")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
@@ -256,8 +257,9 @@ func runRemoteConfigShowCommand(args []string) error {
 		fs.PrintDefaults()
 	}
 
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}

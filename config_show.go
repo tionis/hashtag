@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
+	flag "github.com/spf13/pflag"
 	"os"
 	"strconv"
 	"strings"
@@ -82,8 +82,9 @@ func runConfigShowCommand(args []string) error {
 	}
 
 	effective := fs.Bool("effective", true, "Show effective resolved configuration values")
-	outputMode := fs.String("output", outputModeAuto, "Output mode: auto|pretty|kv|json")
-	if err := fs.Parse(args); err != nil {
+	outputMode := fs.StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	applyCommandFlagConventions(fs)
+	if err := fs.Parse(normalizePFlagArgs(fs, args)); err != nil {
 		if err == flag.ErrHelp {
 			return nil
 		}
