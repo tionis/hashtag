@@ -5,6 +5,7 @@
 Current tools:
 - `forge hash`: concurrent file hashing with xattr caching (`user.checksum.*`).
 - `forge dupes`: duplicate-file detection by content hash.
+- `forge snap`: git-like workflows for snapper/btrfs snapshots (log/status/diff/restore/save).
 - `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
 - `forge hashmap`: map external digests back to BLAKE3 identities.
 - `forge tags`: manage `user.xdg.tags` metadata on files/paths.
@@ -27,6 +28,7 @@ forge <command> [options]
 Top-level commands:
 - `forge hash`
 - `forge dupes`
+- `forge snap`
 - `forge snapshot`
 - `forge hashmap`
 - `forge tags`
@@ -200,6 +202,62 @@ Snapshot database tables:
 - `tree_entry_tags`
 - `pointers`
 - `hash_mappings` (minimal `(blake3, algo) -> digest` mapping table)
+
+`forge snapshot` is Forge's own content-addressed snapshot database flow.
+For snapper/btrfs-native workflows, use `forge snap`.
+
+## Snap Tool (snapper/btrfs)
+
+List snapper configs:
+
+```bash
+forge snap configs [flags]
+```
+
+Snapshot log with per-snapshot change counts:
+
+```bash
+forge snap log [flags]
+```
+
+Working-tree style status (default `latest..0`):
+
+```bash
+forge snap status [flags]
+```
+
+Text diff:
+
+```bash
+forge snap diff [flags] [files...]
+```
+
+Preview or apply undochange:
+
+```bash
+forge snap restore [flags] [files...]
+```
+
+Create a new snapper snapshot:
+
+```bash
+forge snap save [flags]
+```
+
+Common snap flags:
+- `-path`: filesystem path used to select config (default `.`)
+- `-config`: explicit snapper config name override
+- `-no-dbus`: pass `--no-dbus` to snapper
+- `-output`: output mode `auto|pretty|kv|json` (`configs`, `log`, `status`, `restore`, `save`)
+
+Revision selector flags (`status`/`diff`/`restore`):
+- `-from`: `latest|previous|<number>` (default `latest`)
+- `-to`: `current|0|latest|previous|<number>` (default `0`)
+
+Restore behavior:
+- Default is preview mode (`-apply=false`) showing what would be reverted.
+- Use `-apply` to execute `snapper undochange`.
+- Optional trailing file args are forwarded as file filters.
 
 ## Hashmap Tool
 
@@ -490,6 +548,7 @@ Notes:
 ## Documentation
 
 - Docs index: [`docs/README.md`](docs/README.md)
+- AI CLI design: [`docs/ai_cli_design.md`](docs/ai_cli_design.md)
 - Dupes tool: [`docs/dupes_tool.md`](docs/dupes_tool.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
 - Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
