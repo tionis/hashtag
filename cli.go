@@ -80,6 +80,7 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(newHashCommand())
 	root.AddCommand(newDupesCommand())
+	root.AddCommand(newSnapCommand())
 	root.AddCommand(newSnapshotCommand())
 	root.AddCommand(newHashmapCommand())
 	root.AddCommand(newTagsCommand())
@@ -114,10 +115,73 @@ func newDupesCommand() *cobra.Command {
 	}
 }
 
+func newSnapCommand() *cobra.Command {
+	snapCmd := &cobra.Command{
+		Use:                "snap",
+		Short:              "Work with snapper-based btrfs snapshots using git-like workflows.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cmd.Help()
+		},
+	}
+
+	snapCmd.AddCommand(&cobra.Command{
+		Use:                "configs [options]",
+		Short:              "List snapper configs and subvolumes.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapConfigsCommand(args)
+		},
+	})
+	snapCmd.AddCommand(&cobra.Command{
+		Use:                "log [options]",
+		Short:              "List snapshot history with optional per-snapshot change stats.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapLogCommand(args)
+		},
+	})
+	snapCmd.AddCommand(&cobra.Command{
+		Use:                "status [options]",
+		Short:              "Show changes between two snapper revisions (default latest..0).",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapStatusCommand(args)
+		},
+	})
+	snapCmd.AddCommand(&cobra.Command{
+		Use:                "diff [options] [files...]",
+		Short:              "Show textual diff between two snapper revisions (default latest..0).",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapDiffCommand(args)
+		},
+	})
+	snapCmd.AddCommand(&cobra.Command{
+		Use:                "restore [options] [files...]",
+		Aliases:            []string{"undo"},
+		Short:              "Undo changes (snapper undochange) between two revisions.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapRestoreCommand(args)
+		},
+	})
+	snapCmd.AddCommand(&cobra.Command{
+		Use:                "save [options]",
+		Aliases:            []string{"create"},
+		Short:              "Create a snapper snapshot for the selected config/path.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSnapSaveCommand(args)
+		},
+	})
+
+	return snapCmd
+}
+
 func newSnapshotCommand() *cobra.Command {
 	snapshotCmd := &cobra.Command{
 		Use:                "snapshot",
-		Aliases:            []string{"snap"},
 		Short:              "Create, inspect, and diff filesystem snapshots.",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

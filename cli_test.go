@@ -25,6 +25,9 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"dupes"}); err != nil {
 		t.Fatalf("expected dupes command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"snap"}); err != nil {
+		t.Fatalf("expected snap command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"snapshot"}); err != nil {
 		t.Fatalf("expected snapshot command to be registered: %v", err)
 	}
@@ -57,6 +60,24 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	}
 	if _, _, err := root.Find([]string{"snapshot", "remote"}); err != nil {
 		t.Fatalf("expected snapshot remote command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snap", "configs"}); err != nil {
+		t.Fatalf("expected snap configs command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snap", "log"}); err != nil {
+		t.Fatalf("expected snap log command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snap", "status"}); err != nil {
+		t.Fatalf("expected snap status command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snap", "diff"}); err != nil {
+		t.Fatalf("expected snap diff command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snap", "restore"}); err != nil {
+		t.Fatalf("expected snap restore command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snap", "save"}); err != nil {
+		t.Fatalf("expected snap save command to be registered: %v", err)
 	}
 	if _, _, err := root.Find([]string{"hashmap", "ingest"}); err != nil {
 		t.Fatalf("expected hashmap ingest command to be registered: %v", err)
