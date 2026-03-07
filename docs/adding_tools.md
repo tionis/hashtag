@@ -1,6 +1,7 @@
 # Adding Tools
 
 Forge uses `cobra` for command scaffolding.
+Review `project_architecture.md` before introducing new modules or cross-tool abstractions.
 
 ## Where to Add Commands
 

@@ -4,6 +4,7 @@ This folder contains architecture notes and tool contracts for Forge.
 
 ## Structure
 
+- `project_architecture.md`: project purpose, assumptions, architecture layers, module boundaries, and contributor patterns.
 - `tool_rules.md`: cross-tool behavioral rules and conventions.
 - `output_modes.md`: shared output-mode contract (`auto`, `pretty`, `kv`, `json`) and compatibility guidance.
 - `ai_cli_design.md`: human-first, agent-friendly CLI design policy and rollout checklist.

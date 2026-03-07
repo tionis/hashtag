@@ -8,6 +8,55 @@ Repository-specific instructions for coding agents working on Forge.
 - Agent-friendly behavior is required as a first-class secondary goal.
 - Prefer additive machine interfaces over replacing human-oriented UX.
 
+## Project Purpose
+
+- Forge is a single binary for filesystem-heavy local tools plus remote-backed workflows.
+- Canonical content identity is BLAKE3; metadata/state is SQLite-first.
+- Remote/shared behavior is driven by signed S3-backed global config.
+
+## Required Reading
+
+- `docs/project_architecture.md` (purpose, assumptions, architecture, module boundaries)
+- `docs/output_modes.md` (output contract)
+- `docs/ai_cli_design.md` (human-first + agent-safe CLI design)
+- tool-specific docs for any touched command surface
+
+## Architecture and Module Boundaries
+
+1. CLI composition
+- `cli.go` owns command tree and flag wiring.
+- `runXCommand(args []string)` functions own parsing + execution for command surfaces.
+
+2. Domain command modules
+- Top-level files generally map 1:1 to tool domains (`snap.go`, `snapshot.go`, `blob.go`, `remote_*.go`, `vector.go`, etc.).
+- Keep domain logic close to command modules unless shared reuse is substantial.
+
+3. Internal reusable packages
+- `internal/forgeconfig`: path/env resolution.
+- `internal/vectorforge`: vector service internals.
+- `internal/ingestclient`: ingest/hydration helpers.
+- Add new `internal/*` modules only for clear multi-surface reuse.
+
+4. Remote/trust/replication
+- Keep backend session, trust validation, lease logic, and replication coordination centralized.
+- Do not duplicate remote capability handling across tools.
+
+## Implementation Patterns
+
+1. Command implementation pattern
+- Wire flags in `cli.go`.
+- Parse with `pflag` in `runXCommand`.
+- Apply `applyCommandFlagConventions(fs)` and `normalizePFlagArgs(fs, args)`.
+- Render via typed output structs and dedicated `render...Output()` functions.
+
+2. Contract pattern
+- Treat JSON output as stable API.
+- Add bounded selectors (`-limit`, ranges, filters) for large outputs.
+- Keep machine output deterministic and parse-safe.
+
+3. Safety pattern
+- For mutation/destructive flows, require explicit execution (`-apply`, `-dry-run`, strict flags as relevant).
+
 ## Required Rules For CLI Changes
 
 1. Keep human defaults.
@@ -59,3 +108,21 @@ Repository-specific instructions for coding agents working on Forge.
 4. Verify coverage in PR scope.
 - For CLI-affecting work, explicitly check whether one or more skills need updates.
 - Include skill updates in the same commit series as the behavior/documentation change when relevant.
+
+## Change Checklist (Required)
+
+For behavior, contract, or architecture-impacting changes, update all relevant artifacts in the same change set:
+
+1. Code and tests
+- Add/adjust tests for new flags, selector logic, and JSON output contracts.
+
+2. Human docs
+- Update `README.md` for user-facing CLI behavior and flags.
+- Update tool/architecture docs under `docs/`.
+
+3. Agent docs
+- Update `AGENTS.md` when contributor workflow or constraints change.
+- Update embedded skills under `embedded_skills/` when command semantics change.
+
+4. Module placement
+- Validate that new code respects module boundaries from `docs/project_architecture.md`.

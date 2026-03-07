@@ -583,6 +583,7 @@ Notes:
 ## Documentation
 
 - Docs index: [`docs/README.md`](docs/README.md)
+- Project architecture: [`docs/project_architecture.md`](docs/project_architecture.md)
 - AI CLI design: [`docs/ai_cli_design.md`](docs/ai_cli_design.md)
 - Dupes tool: [`docs/dupes_tool.md`](docs/dupes_tool.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
