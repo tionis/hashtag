@@ -328,6 +328,10 @@ func runSnapshotCommand(args []string) error {
 			return runSnapshotInspectCommand(args[1:])
 		case "query":
 			return runSnapshotQueryCommand(args[1:])
+		case "embed":
+			return runSnapshotEmbedCommand(args[1:])
+		case "similar":
+			return runSnapshotSimilarCommand(args[1:])
 		}
 	}
 
@@ -342,8 +346,8 @@ func runSnapshotCreateCommand(args []string) error {
 	fs.Usage = func() {
 		fmt.Fprintf(
 			fs.Output(),
-			"Usage:\n  %s snapshot [options] [path]\n  %s snapshot history [options] [path]\n  %s snapshot diff [options] [path]\n  %s snapshot inspect [options]\n  %s snapshot query [options]\n  %s snapshot remote [options] <remote:path>\n\n",
-			os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0],
+			"Usage:\n  %s snapshot [options] [path]\n  %s snapshot history [options] [path]\n  %s snapshot diff [options] [path]\n  %s snapshot inspect [options]\n  %s snapshot query [options]\n  %s snapshot embed [options] [path]\n  %s snapshot similar [options] [path]\n  %s snapshot remote [options] <remote:path>\n\n",
+			os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0],
 		)
 		fmt.Fprintln(fs.Output(), "Create a content-addressed filesystem snapshot and store a time/location pointer.")
 		fmt.Fprintln(fs.Output(), "\nOptions:")

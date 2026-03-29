@@ -19,6 +19,8 @@ CLI subcommands:
 - `forge snapshot diff`
 - `forge snapshot inspect`
 - `forge snapshot query`
+- `forge snapshot embed`
+- `forge snapshot similar`
 
 ## Hash Algorithms
 
@@ -85,6 +87,32 @@ Core tables:
   - PK: `(blake3, algo)`
 - `remote_hash_cache(remote_path, object_path, size, mod_time_ns, etag, hash_algo, hash_digest, source, confidence, updated_at_ns)`
   - PK: `(remote_path, object_path, hash_algo)`
+
+## Image Embeddings Integration
+
+Snapshot image embedding workflows remain blob-less:
+- the snapshot DB still stores only file/tree metadata and BLAKE3 content hashes
+- image embeddings are stored separately in the vector embeddings DB and joined by `tree_entries.target_hash`
+
+Current local integration:
+- `forge snapshot embed` resolves the latest local tree snapshot for a path
+- it selects image-like `tree_entries` by extension and groups them by `target_hash`
+- matching files get additional external digest mappings in `hash_mappings`
+  - `sha256`
+  - `embedding-cache-key:image:<model>` for the embeddings backend cache lookup API
+- Forge batch-checks the backend cache lookup API for already-known cache keys before touching the filesystem
+- if a backend cache hit is found, the vector is written locally without requiring the original file to still exist
+- for unresolved hashes, it then looks for a current on-disk file under the snapshot root whose BLAKE3 still matches the snapshot hash
+- cache hits and fresh predictions are both written to `image_embeddings(hash, vector)`
+- `forge snapshot similar` reads `image_embeddings` and computes cosine similarity within the selected snapshot's image hash set
+
+Embeddings DB additive tables used by snapshot workflows:
+- `image_embeddings(hash PK, vector, created_at, updated_at)`
+- `embedding_models(kind PK, model, updated_at_ns)`
+
+Notes:
+- local image embeddings are keyed by content hash, not by `(hash, model)`
+- `embedding_models` records the intended image model and is used to prevent mixed-model writes in the same local DB
 
 Indexes:
 - `pointers(path, snapshot_time_ns DESC)`

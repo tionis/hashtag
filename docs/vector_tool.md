@@ -118,6 +118,10 @@ Local files:
 - `FORGE_PATH_VECTOR_TEMP_DIR`: short-lived upload staging
 - `blob.db` + `FORGE_PATH_BLOB_CACHE`: payload spool by CID (queue stores CID refs)
 
+Shared local consumer:
+
+- `forge snapshot embed` / `forge snapshot similar` can also read and write `image_embeddings` in the same local embeddings DB by content hash.
+
 Remote files:
 
 Current implementation:

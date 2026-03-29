@@ -62,6 +62,12 @@ func TestRootCommandContainsCoreTools(t *testing.T) {
 	if _, _, err := root.Find([]string{"snapshot", "query"}); err != nil {
 		t.Fatalf("expected snapshot query command to be registered: %v", err)
 	}
+	if _, _, err := root.Find([]string{"snapshot", "embed"}); err != nil {
+		t.Fatalf("expected snapshot embed command to be registered: %v", err)
+	}
+	if _, _, err := root.Find([]string{"snapshot", "similar"}); err != nil {
+		t.Fatalf("expected snapshot similar command to be registered: %v", err)
+	}
 	if _, _, err := root.Find([]string{"snapshot", "remote"}); err != nil {
 		t.Fatalf("expected snapshot remote command to be registered: %v", err)
 	}

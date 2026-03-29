@@ -8,6 +8,14 @@
 `forge snapshot` uses BLAKE3 as canonical file identity.  
 `forge hashmap` bridges these so external hashes (for example SHA-256) can be resolved to the same BLAKE3 identity used in snapshots.
 
+Other Forge workflows can also reuse the same table. For example, snapshot image
+embedding flows can add:
+- plain `sha256`
+- backend cache-key digests such as `embedding-cache-key:image:<model>`
+
+Those cache-key digests let Forge batch backend cache lookups before it reads
+local files again.
+
 ## Commands
 
 - `forge hashmap ingest [flags] [path]`

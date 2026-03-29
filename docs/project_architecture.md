@@ -30,7 +30,7 @@ Primary goals:
 
 2. Tool Domain Layer
 - Top-level files grouped by tool/workflow:
-  - `snap.go`, `snapshot.go`, `snapshot_query.go`
+  - `snap.go`, `snapshot.go`, `snapshot_query.go`, `snapshot_embeddings.go`
   - `blob.go`, `blob_refs.go`, `blob_inventory_cache.go`
   - `remote_config.go`, `remote_config_manage.go`, `remote_*`
   - `vector.go`, `replication_daemon.go`
@@ -60,7 +60,9 @@ Typical DB roles:
 - `refs.db`: local keep-set references used for GC/replication workflows
 - `remote.db`: local cache/trust state for remote config
 - `s3-blobs.db` + `s3-blobs-overlay.db`: remote blob inventory cache and local overlay
-- `vector/queue.db`, `vector/embeddings.db`, `embeddings.db` (hydrated read path)
+- `vector/queue.db`: vector service queue state
+- `vector/embeddings.db`: final image/text embeddings, also used by snapshot image embedding workflows
+- `embeddings.db`: hydrated read path for ingest prechecks
 
 ## Remote/Trust Model
 

@@ -7,7 +7,7 @@ Use this skill to route a request to the correct Forge subcommand.
 - `forge hash`: hash files and optionally cache xattrs.
 - `forge dupes`: find duplicate files by content.
 - `forge snap`: inspect and restore snapper/btrfs snapshots.
-- `forge snapshot`: create and diff Forge content-addressed snapshots.
+- `forge snapshot`: create and diff Forge content-addressed snapshots, plus snapshot-scoped image embedding workflows.
 - `forge hashmap`: map external digests to BLAKE3.
 - `forge tags`: read/write `user.xdg.tags`.
 - `forge config show`: inspect effective local+remote configuration.

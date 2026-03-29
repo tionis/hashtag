@@ -355,8 +355,12 @@ func ingestHashMappingsFromFile(tx *sql.Tx, path string, verbose bool, stats *ha
 	return nil
 }
 
-func upsertHashMapping(tx *sql.Tx, blake3Digest, algo, digest string) error {
-	if _, err := tx.Exec(
+type hashMappingExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func upsertHashMapping(execer hashMappingExecer, blake3Digest, algo, digest string) error {
+	if _, err := execer.Exec(
 		`INSERT INTO hash_mappings(blake3, algo, digest)
 		 VALUES(?, ?, ?)
 		 ON CONFLICT(blake3, algo) DO UPDATE SET digest = excluded.digest`,
@@ -367,6 +371,52 @@ func upsertHashMapping(tx *sql.Tx, blake3Digest, algo, digest string) error {
 		return fmt.Errorf("upsert hash mapping (%s,%s)->%s: %w", blake3Digest, algo, digest, err)
 	}
 	return nil
+}
+
+func loadHashMappingsForBlake3s(db *sql.DB, blake3Digests []string, algos []string) (map[string]map[string]string, error) {
+	results := make(map[string]map[string]string, len(blake3Digests))
+	if len(blake3Digests) == 0 || len(algos) == 0 {
+		return results, nil
+	}
+
+	for _, chunk := range chunkStrings(blake3Digests, 500) {
+		query := fmt.Sprintf(
+			`SELECT blake3, algo, digest
+			 FROM hash_mappings
+			 WHERE algo IN (%s) AND blake3 IN (%s)
+			 ORDER BY blake3 ASC, algo ASC`,
+			sqlPlaceholders(len(algos)),
+			sqlPlaceholders(len(chunk)),
+		)
+		args := make([]any, 0, len(algos)+len(chunk))
+		args = append(args, anySlice(algos)...)
+		args = append(args, anySlice(chunk)...)
+
+		rows, err := db.Query(query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("query hash mappings for %d blake3 digest(s): %w", len(chunk), err)
+		}
+		for rows.Next() {
+			var blake3Digest string
+			var algo string
+			var digest string
+			if err := rows.Scan(&blake3Digest, &algo, &digest); err != nil {
+				_ = rows.Close()
+				return nil, fmt.Errorf("scan hash mapping row: %w", err)
+			}
+			if _, ok := results[blake3Digest]; !ok {
+				results[blake3Digest] = make(map[string]string)
+			}
+			results[blake3Digest][algo] = digest
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("iterate hash mapping rows: %w", err)
+		}
+		_ = rows.Close()
+	}
+
+	return results, nil
 }
 
 func runHashmapLookupCommand(args []string) error {

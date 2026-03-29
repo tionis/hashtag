@@ -6,7 +6,7 @@ Current tools:
 - `forge hash`: concurrent file hashing with xattr caching (`user.checksum.*`).
 - `forge dupes`: duplicate-file detection by content hash.
 - `forge snap`: git-like workflows for snapper/btrfs snapshots (log/status/diff/restore/save).
-- `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, and tag query.
+- `forge snapshot`: metadata-only filesystem snapshots with history, diff, inspect, tag query, and snapshot-scoped image embeddings.
 - `forge hashmap`: map external digests back to BLAKE3 identities.
 - `forge tags`: manage `user.xdg.tags` metadata on files/paths.
 - `forge skills`: list/install embedded skills for agent runtimes.
@@ -171,9 +171,22 @@ Query entries by tags:
 forge snapshot query -tree <tree_hash> -tags tag1,tag2 [flags]
 ```
 
+Preview or create missing image embeddings for the latest local snapshot:
+
+```bash
+forge snapshot embed [flags] [path]
+forge snapshot embed -apply [flags] [path]
+```
+
+Find similar embedded images inside the latest local snapshot:
+
+```bash
+forge snapshot similar -image path/to/query.jpg [flags] [path]
+```
+
 Snapshot flags:
 - `-db`: snapshot DB path (default from `${FORGE_PATH_SNAPSHOT_DB}` or `${FORGE_DATA_DIR}/snapshot.db`)
-- `-output`: output mode `auto|pretty|kv|json` (create/history/diff/inspect/query, default `auto`)
+- `-output`: output mode `auto|pretty|kv|json` (create/history/diff/inspect/query/embed/similar, default `auto`)
 - `-v`: verbose output (create/remote create)
 - `-strict`: fail immediately on recoverable scan/hash warnings (create/remote create)
 - `-basic-tree`: zero entry `mode`/`mod_time_ns` and exclude entry tags from tree snapshots (create/remote create)
@@ -184,6 +197,17 @@ Snapshot flags:
 - `-recursive`: include descendant tree entries (inspect)
 - `-tags`: required tags filter (query)
 - `-kind`: query kind filter (`file|symlink|tree|all`, default `file`)
+
+Snapshot image embedding flags:
+- `-embed-db`: image embeddings DB path (default `${FORGE_PATH_VECTOR_EMBED_DB}` or `${FORGE_DATA_DIR}/vector/embeddings.db`)
+- `-backend-url`: embedding backend base URL for `snapshot embed -apply` (default `${FORGE_IMAGE_EMBEDDINGS_URL}` or `${EMBEDDINGS_ENDPOINT}` or `https://embeddings.tionis.dev`)
+- `-token`: embedding backend bearer token for `snapshot embed -apply` (default `${FORGE_IMAGE_EMBEDDINGS_TOKEN}` or `${EMBEDDINGS_TOKEN}`)
+- `-model`: image embedding model name (default `${FORGE_IMAGE_EMBEDDINGS_MODEL}` or `ViT-SO400M-16-SigLIP2-384__webli`)
+- `-apply`: create missing image embeddings (default is preview only)
+- `-strict`: fail if current files are missing or changed since the selected snapshot
+- `-limit`: cap missing hashes inspected/generated (`0` means all)
+- `-sample-limit`: cap selected hashes shown in `snapshot embed` output
+- `-image`: query image path for `snapshot similar` (snapshot-relative or absolute)
 
 Diff behavior:
 - Without `-from/-to`: compares the two newest snapshots for the path.
@@ -215,6 +239,16 @@ Snapshot metadata:
 - `user.xdg.tags` is ingested as normalized tags and stored as first-class relational data.
 - Tree hashes are content-addressed using BLAKE3 over canonical tree serialization (`forge.tree.v1`).
 - `-basic-tree` keeps canonical tree hashing but stores `mode=0`, `mod_time_ns=0`, and no entry tags for each entry, which helps cross-filesystem comparisons when metadata drifts during upload/sync.
+
+Snapshot image embeddings:
+- `forge snapshot embed` operates on the latest local tree snapshot for the selected path.
+- It uses snapshot file hashes as the stable identity and writes vectors to `image_embeddings(hash, vector)` in the embeddings DB.
+- It also writes external digest mappings into `snapshot.db` `hash_mappings`, including plain `sha256` and model-specific embedding cache keys (`embedding-cache-key:image:<model>`).
+- When those model-specific cache keys already exist, Forge batches `/v1/cache/lookup` requests before touching the filesystem, so cached backend embeddings can be materialized locally even if the original files are no longer present.
+- Generation still needs a current local file whose BLAKE3 matches the snapshot hash; missing/changed files are skipped with warnings or fail in `-strict`.
+- On `-apply`, Forge first tries the backend cache lookup API with the stored cache-key digest and only falls back to `/ml/predict` on cache miss.
+- Embedding exploration is snapshot-scoped: `forge snapshot similar` compares the query image against other embedded image hashes in that snapshot.
+- Local model metadata is tracked in `embedding_models(kind, model, updated_at_ns)` to guard against accidental mixed-model writes.
 
 Snapshot database tables:
 - `trees`

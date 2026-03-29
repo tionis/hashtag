@@ -361,6 +361,36 @@ func newSnapshotCommand() *cobra.Command {
 	query.Flags().StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
 	snapshotCmd.AddCommand(query)
 
+	embed := &cobra.Command{
+		Use:   "embed [options] [path]",
+		Short: "Preview or create missing image embeddings for the latest snapshot.",
+		RunE:  runLegacyCommandWithCobra(runSnapshotEmbedCommand),
+	}
+	embed.Flags().StringP("db", "d", defaultSnapshotDBPath(), "Path to snapshot database")
+	embed.Flags().String("embed-db", forgeconfig.VectorEmbedDBPath(), "Path to image embeddings database")
+	embed.Flags().String("backend-url", defaultImageEmbeddingsURL, "Embedding backend base URL")
+	embed.Flags().String("token", strings.TrimSpace(os.Getenv(envImageEmbeddingsToken)), "Embedding backend bearer token")
+	embed.Flags().String("model", defaultImageEmbeddingsModel, "Embedding model name")
+	embed.Flags().BoolP("apply", "a", false, "Create missing embeddings (default is preview only)")
+	embed.Flags().BoolP("strict", "s", false, "Fail if current files are missing or changed since the selected snapshot")
+	embed.Flags().IntP("limit", "n", 0, "Maximum number of missing hashes to inspect or embed (0 means all)")
+	embed.Flags().Int("sample-limit", defaultSnapshotEmbedSampleLimit, "Maximum number of selected hashes to include in output")
+	embed.Flags().Duration("http-timeout", 120*time.Second, "HTTP request timeout for backend calls")
+	embed.Flags().StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	snapshotCmd.AddCommand(embed)
+
+	similar := &cobra.Command{
+		Use:   "similar [options] [path]",
+		Short: "Find similar embedded images inside the latest snapshot.",
+		RunE:  runLegacyCommandWithCobra(runSnapshotSimilarCommand),
+	}
+	similar.Flags().StringP("db", "d", defaultSnapshotDBPath(), "Path to snapshot database")
+	similar.Flags().String("embed-db", forgeconfig.VectorEmbedDBPath(), "Path to image embeddings database")
+	similar.Flags().String("image", "", "Snapshot-relative or absolute path to the query image (required)")
+	similar.Flags().IntP("limit", "n", defaultSnapshotSimilarLimit, "Maximum number of similar results to return")
+	similar.Flags().StringP("output", "o", outputModeAuto, "Output mode: auto|pretty|kv|json")
+	snapshotCmd.AddCommand(similar)
+
 	remote := &cobra.Command{
 		Use:   "remote [options] <remote:path>",
 		Short: "Create a snapshot pointer for an rclone remote target.",
