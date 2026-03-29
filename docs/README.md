@@ -11,6 +11,7 @@ This folder contains architecture notes and tool contracts for Forge.
 - `adding_tools.md`: command scaffolding and contribution workflow for new tools.
 - `dupes_tool.md`: `forge dupes` duplicate-detection behavior and output.
 - `snapshot_architecture.md`: snapshot schema, canonical hashing, tag normalization, and safety constraints.
+- `ipld_snapshot_design.md`: breaking CID-first replacement design for snapshot trees and CAR import/export.
 - `relay_architecture.md`: Nostr-inspired relay design for events, locking, and coordination primitives.
 - `backend_coordination.md`: S3 coordination/lease model and global blob GC design options.
 - `s3_replication_plan.md`: current and planned per-database S3 replication, hydration, and GC inventory model.

@@ -587,6 +587,7 @@ Notes:
 - AI CLI design: [`docs/ai_cli_design.md`](docs/ai_cli_design.md)
 - Dupes tool: [`docs/dupes_tool.md`](docs/dupes_tool.md)
 - Snapshot architecture: [`docs/snapshot_architecture.md`](docs/snapshot_architecture.md)
+- IPLD snapshot design: [`docs/ipld_snapshot_design.md`](docs/ipld_snapshot_design.md)
 - Relay architecture: [`docs/relay_architecture.md`](docs/relay_architecture.md)
 - Backend coordination: [`docs/backend_coordination.md`](docs/backend_coordination.md)
 - S3 replication plan: [`docs/s3_replication_plan.md`](docs/s3_replication_plan.md)
